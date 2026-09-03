@@ -10,7 +10,11 @@ load_dotenv()
 DB_URL = os.getenv("DATABASE_URL")
 
 if DB_URL:
-    if DB_URL.startswith("postgresql://") and "pg8000" not in DB_URL and "psycopg" not in DB_URL:
+    if DB_URL.startswith("prisma+postgres://"):
+        DB_URL = DB_URL.replace("prisma+postgres://", "postgresql+pg8000://", 1)
+    elif DB_URL.startswith("postgres://"):
+        DB_URL = DB_URL.replace("postgres://", "postgresql+pg8000://", 1)
+    elif DB_URL.startswith("postgresql://") and "pg8000" not in DB_URL and "psycopg" not in DB_URL:
         DB_URL = DB_URL.replace("postgresql://", "postgresql+pg8000://", 1)
 else:
     is_serverless = os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("VERCEL_ENV")
