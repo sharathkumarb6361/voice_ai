@@ -38,78 +38,78 @@ def get_db_connection():
 def init_db():
     try:
         with engine.begin() as conn:
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS businesses (
-                id VARCHAR(64) PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                industry VARCHAR(128) NOT NULL,
-                owner_name VARCHAR(255) NOT NULL,
-                phone VARCHAR(64) NOT NULL,
-                email VARCHAR(255) NOT NULL,
-                address TEXT,
-                created_at VARCHAR(64) NOT NULL
-            );
-        """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS businesses (
+                    id VARCHAR(64) PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    industry VARCHAR(128) NOT NULL,
+                    owner_name VARCHAR(255) NOT NULL,
+                    phone VARCHAR(64) NOT NULL,
+                    email VARCHAR(255) NOT NULL,
+                    address TEXT,
+                    created_at VARCHAR(64) NOT NULL
+                );
+            """))
 
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS workflows (
-                id VARCHAR(64) PRIMARY KEY,
-                business_id VARCHAR(64) NOT NULL,
-                name VARCHAR(255) NOT NULL,
-                industry VARCHAR(128) NOT NULL,
-                trigger_event VARCHAR(128) NOT NULL,
-                greeting TEXT NOT NULL,
-                fields TEXT NOT NULL,
-                conditions TEXT NOT NULL,
-                actions TEXT NOT NULL,
-                closing_message TEXT NOT NULL,
-                language VARCHAR(32) NOT NULL DEFAULT 'en-hi',
-                business_hours TEXT,
-                is_active INT NOT NULL DEFAULT 1,
-                created_at VARCHAR(64) NOT NULL
-            );
-        """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS workflows (
+                    id VARCHAR(64) PRIMARY KEY,
+                    business_id VARCHAR(64) NOT NULL,
+                    name VARCHAR(255) NOT NULL,
+                    industry VARCHAR(128) NOT NULL,
+                    trigger_event VARCHAR(128) NOT NULL,
+                    greeting TEXT NOT NULL,
+                    fields TEXT NOT NULL,
+                    conditions TEXT NOT NULL,
+                    actions TEXT NOT NULL,
+                    closing_message TEXT NOT NULL,
+                    language VARCHAR(32) NOT NULL DEFAULT 'en-hi',
+                    business_hours TEXT,
+                    is_active INT NOT NULL DEFAULT 1,
+                    created_at VARCHAR(64) NOT NULL
+                );
+            """))
 
-        try:
-            conn.execute(text("ALTER TABLE workflows ADD COLUMN business_hours TEXT"))
-        except Exception:
-            pass
+            try:
+                conn.execute(text("ALTER TABLE workflows ADD COLUMN business_hours TEXT"))
+            except Exception:
+                pass
 
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS records (
-                id VARCHAR(64) PRIMARY KEY,
-                business_id VARCHAR(64) NOT NULL,
-                workflow_id VARCHAR(64) NOT NULL,
-                caller_name VARCHAR(255) NOT NULL,
-                caller_phone VARCHAR(64) NOT NULL,
-                intent VARCHAR(255) NOT NULL,
-                collected_data TEXT NOT NULL,
-                ai_summary TEXT NOT NULL,
-                urgency VARCHAR(32) NOT NULL DEFAULT 'Normal',
-                followup_status VARCHAR(32) NOT NULL DEFAULT 'Pending',
-                transcript TEXT NOT NULL,
-                tools_executed TEXT NOT NULL,
-                created_at VARCHAR(64) NOT NULL
-            );
-        """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS records (
+                    id VARCHAR(64) PRIMARY KEY,
+                    business_id VARCHAR(64) NOT NULL,
+                    workflow_id VARCHAR(64) NOT NULL,
+                    caller_name VARCHAR(255) NOT NULL,
+                    caller_phone VARCHAR(64) NOT NULL,
+                    intent VARCHAR(255) NOT NULL,
+                    collected_data TEXT NOT NULL,
+                    ai_summary TEXT NOT NULL,
+                    urgency VARCHAR(32) NOT NULL DEFAULT 'Normal',
+                    followup_status VARCHAR(32) NOT NULL DEFAULT 'Pending',
+                    transcript TEXT NOT NULL,
+                    tools_executed TEXT NOT NULL,
+                    created_at VARCHAR(64) NOT NULL
+                );
+            """))
 
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS calendar_events (
-                id VARCHAR(64) PRIMARY KEY,
-                business_id VARCHAR(64) NOT NULL,
-                title VARCHAR(255) NOT NULL,
-                start_time VARCHAR(64) NOT NULL,
-                end_time VARCHAR(64) NOT NULL,
-                attendee_name VARCHAR(255) NOT NULL,
-                attendee_phone VARCHAR(64) NOT NULL,
-                description TEXT,
-                status VARCHAR(32) NOT NULL DEFAULT 'Confirmed',
-                google_event_id VARCHAR(128),
-                created_at VARCHAR(64) NOT NULL
-            );
-        """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS calendar_events (
+                    id VARCHAR(64) PRIMARY KEY,
+                    business_id VARCHAR(64) NOT NULL,
+                    title VARCHAR(255) NOT NULL,
+                    start_time VARCHAR(64) NOT NULL,
+                    end_time VARCHAR(64) NOT NULL,
+                    attendee_name VARCHAR(255) NOT NULL,
+                    attendee_phone VARCHAR(64) NOT NULL,
+                    description TEXT,
+                    status VARCHAR(32) NOT NULL DEFAULT 'Confirmed',
+                    google_event_id VARCHAR(128),
+                    created_at VARCHAR(64) NOT NULL
+                );
+            """))
 
-        seed_default_data(conn)
+            seed_default_data(conn)
     except Exception as e:
         print(f"[Database Warning] Database initialization deferred/failed: {e}")
 

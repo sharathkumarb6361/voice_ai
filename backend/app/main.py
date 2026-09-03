@@ -1,9 +1,20 @@
+import os
+import sys
+
+# Ensure backend directory is in sys.path
+backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import os
 import uvicorn
-from app.database import init_db
-from app.routers import businesses, workflows, records, ai, tools, webhooks
+try:
+    from app.database import init_db
+    from app.routers import businesses, workflows, records, ai, tools, webhooks
+except ImportError:
+    from backend.app.database import init_db
+    from backend.app.routers import businesses, workflows, records, ai, tools, webhooks
 
 app = FastAPI(
     title="Voice AI Personal Assistant Backend API",
