@@ -31,6 +31,9 @@ app.include_router(ai.router)
 app.include_router(tools.router)
 app.include_router(webhooks.router)
 
+@app.get("/")
+@app.get("/api")
+@app.get("/health")
 @app.get("/api/health")
 def health_check():
     return {

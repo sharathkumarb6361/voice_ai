@@ -9,8 +9,12 @@ load_dotenv()
 # Database Connection URI
 DB_URL = os.getenv("DATABASE_URL")
 
-if not DB_URL:
-    if os.getenv("VERCEL"):
+if DB_URL:
+    if DB_URL.startswith("postgresql://") and "pg8000" not in DB_URL and "psycopg" not in DB_URL:
+        DB_URL = DB_URL.replace("postgresql://", "postgresql+pg8000://", 1)
+else:
+    is_serverless = os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("VERCEL_ENV")
+    if is_serverless:
         db_file = "/tmp/assistant.db"
     else:
         try:
@@ -32,7 +36,8 @@ def get_db_connection():
     return engine.connect()
 
 def init_db():
-    with engine.begin() as conn:
+    try:
+        with engine.begin() as conn:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS businesses (
                 id VARCHAR(64) PRIMARY KEY,
@@ -105,6 +110,8 @@ def init_db():
         """))
 
         seed_default_data(conn)
+    except Exception as e:
+        print(f"[Database Warning] Database initialization deferred/failed: {e}")
 
 def seed_default_data(conn):
     print("Verifying & seeding multi-industry businesses, workflows, & calendar events...")
