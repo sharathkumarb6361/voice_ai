@@ -31,13 +31,102 @@ else:
 
 print(f"[Database Engine] Connecting to: {DB_URL.split('@')[-1] if '@' in DB_URL else DB_URL}")
 
-if DB_URL.startswith("sqlite"):
-    engine = create_engine(DB_URL, connect_args={"check_same_thread": False})
-else:
-    engine = create_engine(DB_URL, pool_pre_ping=True)
+fallback_db_file = "/tmp/assistant.db" if (os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("VERCEL_ENV")) else os.path.join(os.path.dirname(__file__), "../data/assistant.db")
+fallback_engine = create_engine(f"sqlite:///{fallback_db_file}", connect_args={"check_same_thread": False})
+
+try:
+    if DB_URL.startswith("sqlite"):
+        primary_engine = create_engine(DB_URL, connect_args={"check_same_thread": False})
+    else:
+        primary_engine = create_engine(DB_URL, pool_pre_ping=True)
+except Exception as e:
+    print(f"[Database Warning] Primary DB engine creation failed: {e}. Falling back to SQLite.")
+    primary_engine = fallback_engine
+
+engine = primary_engine
 
 def get_db_connection():
-    return engine.connect()
+    try:
+        conn = primary_engine.connect()
+        # Verify connection works
+        conn.execute(text("SELECT 1"))
+        return conn
+    except Exception as e:
+        print(f"[Database Warning] Primary connection failed ({e}), using SQLite fallback.")
+        try:
+            init_sqlite_fallback()
+        except Exception:
+            pass
+        return fallback_engine.connect()
+
+def init_sqlite_fallback():
+    try:
+        with fallback_engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS businesses (
+                    id VARCHAR(64) PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    industry VARCHAR(128) NOT NULL,
+                    owner_name VARCHAR(255) NOT NULL,
+                    phone VARCHAR(64) NOT NULL,
+                    email VARCHAR(255) NOT NULL,
+                    address TEXT,
+                    created_at VARCHAR(64) NOT NULL
+                );
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS workflows (
+                    id VARCHAR(64) PRIMARY KEY,
+                    business_id VARCHAR(64) NOT NULL,
+                    name VARCHAR(255) NOT NULL,
+                    industry VARCHAR(128) NOT NULL,
+                    trigger_event VARCHAR(128) NOT NULL,
+                    greeting TEXT NOT NULL,
+                    fields TEXT NOT NULL,
+                    conditions TEXT NOT NULL,
+                    actions TEXT NOT NULL,
+                    closing_message TEXT NOT NULL,
+                    language VARCHAR(32) NOT NULL DEFAULT 'en-hi',
+                    business_hours TEXT,
+                    is_active INT NOT NULL DEFAULT 1,
+                    created_at VARCHAR(64) NOT NULL
+                );
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS records (
+                    id VARCHAR(64) PRIMARY KEY,
+                    business_id VARCHAR(64) NOT NULL,
+                    workflow_id VARCHAR(64) NOT NULL,
+                    caller_name VARCHAR(255) NOT NULL,
+                    caller_phone VARCHAR(64) NOT NULL,
+                    intent VARCHAR(255) NOT NULL,
+                    collected_data TEXT NOT NULL,
+                    ai_summary TEXT NOT NULL,
+                    urgency VARCHAR(32) NOT NULL DEFAULT 'Normal',
+                    followup_status VARCHAR(32) NOT NULL DEFAULT 'Pending',
+                    transcript TEXT NOT NULL,
+                    tools_executed TEXT NOT NULL,
+                    created_at VARCHAR(64) NOT NULL
+                );
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS calendar_events (
+                    id VARCHAR(64) PRIMARY KEY,
+                    business_id VARCHAR(64) NOT NULL,
+                    title VARCHAR(255) NOT NULL,
+                    start_time VARCHAR(64) NOT NULL,
+                    end_time VARCHAR(64) NOT NULL,
+                    attendee_name VARCHAR(255) NOT NULL,
+                    attendee_phone VARCHAR(64) NOT NULL,
+                    description TEXT,
+                    status VARCHAR(32) NOT NULL DEFAULT 'Confirmed',
+                    google_event_id VARCHAR(128),
+                    created_at VARCHAR(64) NOT NULL
+                );
+            """))
+            seed_default_data(conn)
+    except Exception:
+        pass
 
 def init_db():
     try:
