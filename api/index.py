@@ -1,20 +1,13 @@
 import os
 import sys
 
-# Add current directory, root directory, and backend directory to sys.path
-api_dir = os.path.dirname(os.path.abspath(__file__))
-root_dir = os.path.dirname(api_dir)
+# Ensure backend and root directories are in sys.path
+root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 backend_dir = os.path.join(root_dir, "backend")
 
-for path in [backend_dir, root_dir, api_dir]:
-    if path and path not in sys.path:
-        sys.path.insert(0, path)
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
 
-try:
-    from app.main import app as _app
-except Exception:
-    from backend.app.main import app as _app
-
-app = _app
-handler = app
-
+from backend.app.main import app
