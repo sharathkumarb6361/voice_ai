@@ -11,12 +11,10 @@ for path in [backend_dir, root_dir, api_dir]:
         sys.path.insert(0, path)
 
 try:
-    from app.main import app
+    from app.main import app as _app
 except Exception:
-    try:
-        from backend.app.main import app
-    except Exception as e:
-        raise RuntimeError(f"Failed to import FastAPI app in Vercel function: {e}")
+    from backend.app.main import app as _app
 
+app = _app
 handler = app
 
