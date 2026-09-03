@@ -14,8 +14,13 @@ if DB_URL:
         DB_URL = DB_URL.replace("prisma+postgres://", "postgresql+pg8000://", 1)
     elif DB_URL.startswith("postgres://"):
         DB_URL = DB_URL.replace("postgres://", "postgresql+pg8000://", 1)
-    elif DB_URL.startswith("postgresql://") and "pg8000" not in DB_URL and "psycopg" not in DB_URL:
+    elif DB_URL.startswith("postgresql://") and "pg8000" not in DB_URL:
         DB_URL = DB_URL.replace("postgresql://", "postgresql+pg8000://", 1)
+    
+    if "?" in DB_URL:
+        base_url, query_str = DB_URL.split("?", 1)
+        params = [p for p in query_str.split("&") if p and not p.startswith("api_key=") and not p.startswith("sslmode=")]
+        DB_URL = f"{base_url}?{'&'.join(params)}" if params else base_url
 else:
     is_serverless = os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("VERCEL_ENV")
     if is_serverless:
