@@ -235,6 +235,7 @@ def seed_default_data(conn):
         })
         cake_fields = [
             {"key": "order_type", "label": "Order Type", "type": "select", "options": ["New Cake Order", "General Enquiry", "Custom Design"], "required": True},
+            {"key": "cake_type", "label": "Cake Type / Occasion", "type": "select", "options": ["Birthday Cake", "Anniversary Cake", "Tier Wedding Cake", "Theme Custom Cake", "Pastry Box"], "required": True},
             {"key": "cake_flavor", "label": "Cake Flavor", "type": "text", "required": True, "description": "e.g. Belgian Dark Chocolate, Red Velvet, Vanilla Mango"},
             {"key": "weight_kg", "label": "Weight (in kg)", "type": "number", "required": True, "description": "e.g. 1, 2, 5"},
             {"key": "required_date", "label": "Required Date & Time", "type": "datetime", "required": True},
@@ -258,9 +259,9 @@ def seed_default_data(conn):
             VALUES (:id, :business_id, :name, :industry, :trigger_event, :greeting, :fields, :conditions, :actions, :closing_message, :language, :business_hours, 1, :created_at)
         """), {
             "id": cake_wf_id, "business_id": cake_biz_id, "name": "Missed Call Cake Order & Enquiry", "industry": "Cake Shop",
-            "trigger_event": "Missed Call", "greeting": "Namaste! Thank you for calling Sweet Treats Bakery. We missed your call. Would you like to place a new cake order or ask a general enquiry?",
-            "fields": json.dumps(cake_fields), "conditions": json.dumps(cake_conditions), "actions": json.dumps(["create_order_enquiry", "send_owner_sms_alert"]),
-            "closing_message": "Thank you! Your cake order details have been recorded. Our head baker will contact you shortly to confirm design and pricing.",
+            "trigger_event": "Missed Call", "greeting": "Namaste! Thank you for calling Sweet Treats Bakery. We missed your call. Are you looking to order a cake or do you have a general enquiry?",
+            "fields": json.dumps(cake_fields), "conditions": json.dumps(cake_conditions), "actions": json.dumps(["create_order_enquiry", "send_owner_summary_alert"]),
+            "closing_message": "Thank you! Your cake order enquiry details have been recorded. Our head baker will contact you shortly to confirm design and pricing.",
             "language": "en-hi", "business_hours": default_bh, "created_at": now
         })
 

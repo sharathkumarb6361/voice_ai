@@ -91,3 +91,26 @@ class ExternalApiService:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "message": f"Callback task '{task_id}' assigned to dispatch team for {caller_name}."
         }
+
+    @staticmethod
+    def send_owner_summary_alert(business_name: str, owner_name: str, caller_name: str, caller_phone: str, order_type: str, cake_type: str, flavor: str, weight: str, required_date: str, custom_message: str, delivery_pref: str, budget_inr: str):
+        print(f"[Python Tool Call: send_owner_summary_alert] Generating structured shop owner summary for: {owner_name} ({business_name})")
+        alert_id = f"ALT-{str(hash(caller_phone + (flavor or '')) % 9000 + 1000)}"
+        summary_text = (
+            f"🎂 NEW CAKE ORDER ENQUIRY SUMMARY\n"
+            f"Customer: {caller_name} ({caller_phone})\n"
+            f"Order Type: {order_type} | Category: {cake_type}\n"
+            f"Flavor & Weight: {flavor} ({weight} kg)\n"
+            f"Required Date/Time: {required_date}\n"
+            f"Delivery Preference: {delivery_pref}\n"
+            f"Custom Text on Cake: '{custom_message or 'None'}'\n"
+            f"Budget: ₹{budget_inr or 'N/A'}\n"
+            f"Status: Order Enquiry Created - Head Baker Follow-Up Required"
+        )
+        return {
+            "alert_id": alert_id,
+            "recipient_owner": f"{owner_name} ({business_name})",
+            "formatted_summary": summary_text,
+            "sent": True,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }

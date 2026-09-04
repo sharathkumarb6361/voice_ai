@@ -211,24 +211,92 @@ class AiService:
                     "result": check_res
                 })
 
+                start_iso = check_res.get("start_time", datetime.now().isoformat())
+                end_iso = check_res.get("end_time", datetime.now().isoformat())
+
+                # Extract cake / order metadata
+                flavor = "Custom"
+                flav_match = re.search(r'(dark chocolate|chocolate|red velvet|vanilla|mango|black forest|pineapple|butterscotch|strawberry)', user_lower)
+                if flav_match:
+                    flavor = flav_match.group(1).title()
+
+                weight = "1"
+                w_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:kg|kilo|pound|lb)', user_lower)
+                if w_match:
+                    weight = w_match.group(1)
+
+                order_type = "New Cake Order" if any(w in user_lower for w in ["order", "cake", "buy", "place"]) else "General Enquiry"
+                
+                cake_type = "Theme Custom Cake"
+                if "birthday" in user_lower:
+                    cake_type = "Birthday Cake"
+                elif "anniversary" in user_lower:
+                    cake_type = "Anniversary Cake"
+                elif any(w in user_lower for w in ["wedding", "tier", "marriage"]):
+                    cake_type = "Tier Wedding Cake"
+                elif any(w in user_lower for w in ["pastry", "cupcake"]):
+                    cake_type = "Pastry Box"
+
+                custom_msg = None
+                msg_match = re.search(r'(?:write|message|text|says)\s*[\'"]?([^\'"]+?)[\'"]?(?=\s+on|\s+for|\s+$)', user_lower)
+                if msg_match:
+                    custom_msg = msg_match.group(1).strip()
+
+                delivery_pref = "Home Delivery" if any(w in user_lower for w in ["delivery", "deliver"]) else "Store Pickup"
+
+                budget = "2000"
+                b_match = re.search(r'(?:rs|rupees|inr|budget|₹)\s*(\d+)', user_lower) or re.search(r'(\d+)\s*(?:rs|rupees|inr)', user_lower)
+                if b_match:
+                    budget = b_match.group(1)
+
+                is_cake_shop = (workflow.get("industry") == "Cake Shop" or "cake" in user_lower or "order" in user_lower)
+
+                if is_cake_shop:
+                    enq_id = f"ENQ-{str(uuid.uuid4())[:6]}"
+                    enquiry_tool_res = {
+                        "success": True,
+                        "enquiry_id": enq_id,
+                        "order_type": order_type,
+                        "cake_type": cake_type,
+                        "flavor": flavor,
+                        "weight_kg": weight,
+                        "required_date": start_iso,
+                        "custom_message": custom_msg,
+                        "delivery_preference": delivery_pref,
+                        "budget_inr": budget
+                    }
+                    executed_tools.append({
+                        "tool": "create_order_enquiry",
+                        "args": {"enquiry_id": enq_id, "cake_type": cake_type, "flavor": flavor},
+                        "result": enquiry_tool_res
+                    })
+                    collected_data_dict["order_enquiry"] = enquiry_tool_res
+
+                    owner_summary = ExternalApiService.send_owner_summary_alert(
+                        business_name=business['name'],
+                        owner_name=business.get('owner_name', 'Ananya Sharma'),
+                        caller_name=caller_name,
+                        caller_phone=caller_phone,
+                        order_type=order_type,
+                        cake_type=cake_type,
+                        flavor=flavor,
+                        weight=weight,
+                        required_date=start_iso,
+                        custom_message=custom_msg,
+                        delivery_pref=delivery_pref,
+                        budget_inr=budget
+                    )
+                    executed_tools.append({
+                        "tool": "send_owner_summary_alert",
+                        "args": {"recipient": business.get('owner_name', 'Ananya Sharma')},
+                        "result": owner_summary
+                    })
+                    collected_data_dict["owner_structured_summary"] = owner_summary.get("formatted_summary")
+
                 if check_res.get("available") is True:
-                    start_iso = check_res.get("start_time")
-                    end_iso = check_res.get("end_time")
-
-                    # Extract cake / order metadata if present
-                    flavor = "Custom"
-                    flav_match = re.search(r'(dark chocolate|chocolate|red velvet|vanilla|mango|black forest|pineapple|butterscotch|strawberry)', user_lower)
-                    if flav_match:
-                        flavor = flav_match.group(1).title()
-
-                    weight = "1"
-                    w_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:kg|kilo|pound|lb)', user_lower)
-                    if w_match:
-                        weight = w_match.group(1)
-
-                    if workflow.get("industry") == "Cake Shop" or "cake" in user_lower or "order" in user_lower:
+                    if is_cake_shop:
                         evt_title = f"Cake Order ({flavor} - {weight}kg) - {caller_name}"
-                        evt_desc = f"Voice AI Cake Order: {flavor} ({weight}kg). Customer: {caller_name} ({caller_phone}). Business: {business['name']}"
+                        evt_desc = f"Voice AI Cake Order: {cake_type} ({flavor}, {weight}kg). Delivery: {delivery_pref}. Custom Msg: '{custom_msg or 'None'}'. Customer: {caller_name} ({caller_phone})"
                     else:
                         evt_title = f"{workflow['industry']} - {caller_name}"
                         evt_desc = f"Scheduled via Voice AI Assistant ({workflow['name']})"
