@@ -17,10 +17,7 @@ Architected with a **Python FastAPI** backend server and a **Pure React.js (Vite
 
 ### 1. Multi-Industry Support (5 Pre-Configured Use Cases)
 - 🍰 **Cake Shop ("Sweet Treats Bakery")**: Collects cake flavor, weight, date/time, custom message, delivery preference, budget. Evaluates 24-hour delivery rule to set **URGENT** priority.
-- 🏥 **Clinic / Doctor ("Apex Health Clinic")**: Manages appointment bookings, rescheduling, and doctor availability using **Google Calendar Tool Calling** (`check_calendar_availability` & `create_calendar_event`). Strictly avoids medical advice.
 - 🚚 **Logistics & Delivery ("SwiftMove Express")**: Real-time package tracking using **External REST API Tool Calling** (`track_delivery_status` for waybill `#TRK-9821-IN`).
-- 🏡 **Real Estate ("Prime Haven Realty")**: Qualifies leads, collects budget/location, schedules property site visits on Google Calendar.
-- 🔧 **Home & Repair Services ("FixIt Pro Maintenance")**: Captures emergency repair requests and flags *Immediate Emergency* as **CRITICAL** priority.
 
 ### 2. Custom Workflow Builder
 - Form & step-by-step visual workflow editor.
