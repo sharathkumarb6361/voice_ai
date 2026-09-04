@@ -164,19 +164,22 @@ class AiService:
             "schedule", "book", "appointment", "site visit", "tomorrow", "4 pm", "10 am",
             "reschedule", "cancel", "change", "time", "pm", "am", "p.m.", "a.m.", "slot",
             "move", "shift", "update", "set", "beku", "naale", "kal", "chahiye",
-            "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
+            "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+            "order", "cake", "bakery", "pastry", "delivery", "pickup", "flavor", "flavour", "kg", "sweet"
         ]
         if any(k in user_lower for k in calendar_keywords):
-            if "cancel" in user_lower and ("event" in user_lower or "appointment" in user_lower):
+            if "cancel" in user_lower and ("event" in user_lower or "appointment" in user_lower or "order" in user_lower):
                 res = CalendarService.cancel_event("latest", business_id=business_id)
                 executed_tools.append({"tool": "cancel_calendar_event", "args": {"event_id": "latest"}, "result": res})
                 if res.get("success"):
                     collected_data_dict["appointment_status"] = "Cancelled"
             elif any(w in user_lower for w in ["reschedule", "change", "move", "shift", "update", "set"]):
                 time_match = "16:00"
-                t_match = re.search(r'(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)', user_lower, re.IGNORECASE)
-                if t_match:
-                    time_match = t_match.group(1)
+                for m in re.finditer(r'(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)', user_lower, re.IGNORECASE):
+                    after_str = user_lower[m.end():m.end()+6]
+                    if not re.match(r'^\s*(?:kg|kilo|pound|lb)', after_str):
+                        time_match = m.group(1)
+                        break
                 date_match = "day after tomorrow" if ("day after" in user_lower or "parso" in user_lower) else ("tomorrow" if ("tomorrow" in user_lower or "kal" in user_lower or "naale" in user_lower) else "today")
                 target_dt = CalendarService.parse_datetime_input(date_match, time_match)
                 new_start = target_dt.isoformat()
@@ -193,9 +196,13 @@ class AiService:
             else:
                 date_match = "tomorrow" if ("tomorrow" in user_lower or "naale" in user_lower or "kal" in user_lower) else ("day after tomorrow" if ("day after" in user_lower or "parso" in user_lower) else "today")
                 time_match = "16:00"
-                t_match = re.search(r'(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)', user_lower, re.IGNORECASE)
-                if t_match:
-                    time_match = t_match.group(1)
+                
+                # Find all potential time matches excluding weight suffixes (e.g. 2kg)
+                for m in re.finditer(r'(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)', user_lower, re.IGNORECASE):
+                    after_str = user_lower[m.end():m.end()+6]
+                    if not re.match(r'^\s*(?:kg|kilo|pound|lb)', after_str):
+                        time_match = m.group(1)
+                        break
 
                 check_res = CalendarService.check_availability(date_match, time_match, 30, business_id=business_id)
                 executed_tools.append({
@@ -208,18 +215,36 @@ class AiService:
                     start_iso = check_res.get("start_time")
                     end_iso = check_res.get("end_time")
 
+                    # Extract cake / order metadata if present
+                    flavor = "Custom"
+                    flav_match = re.search(r'(dark chocolate|chocolate|red velvet|vanilla|mango|black forest|pineapple|butterscotch|strawberry)', user_lower)
+                    if flav_match:
+                        flavor = flav_match.group(1).title()
+
+                    weight = "1"
+                    w_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:kg|kilo|pound|lb)', user_lower)
+                    if w_match:
+                        weight = w_match.group(1)
+
+                    if workflow.get("industry") == "Cake Shop" or "cake" in user_lower or "order" in user_lower:
+                        evt_title = f"Cake Order ({flavor} - {weight}kg) - {caller_name}"
+                        evt_desc = f"Voice AI Cake Order: {flavor} ({weight}kg). Customer: {caller_name} ({caller_phone}). Business: {business['name']}"
+                    else:
+                        evt_title = f"{workflow['industry']} - {caller_name}"
+                        evt_desc = f"Scheduled via Voice AI Assistant ({workflow['name']})"
+
                     create_res = CalendarService.create_event(
                         business_id=business_id,
-                        title=f"{workflow['industry']} - {caller_name}",
+                        title=evt_title,
                         start_time=start_iso,
                         end_time=end_iso,
                         attendee_name=caller_name,
                         attendee_phone=caller_phone,
-                        description=f"Scheduled via Voice AI Assistant ({workflow['name']})"
+                        description=evt_desc
                     )
                     executed_tools.append({
                         "tool": "create_calendar_event",
-                        "args": {"title": f"{workflow['industry']} - {caller_name}", "start_time": start_iso},
+                        "args": {"title": evt_title, "start_time": start_iso},
                         "result": create_res
                     })
                     if create_res.get("success"):
@@ -229,6 +254,8 @@ class AiService:
                             "title": create_res.get("title"),
                             "start_time": start_iso,
                             "end_time": end_iso,
+                            "flavor": flavor,
+                            "weight_kg": weight,
                             "status": "Confirmed"
                         }
 
