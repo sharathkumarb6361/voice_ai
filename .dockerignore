@@ -1,0 +1,10 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+frontend/node_modules
+frontend/dist
+backend/data/*.db
+.git
+.gitignore

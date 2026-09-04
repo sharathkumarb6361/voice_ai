@@ -23,6 +23,3 @@ backend/data/*.db
 .env
 .env.local
 backend/.env
-
-# Vercel metadata
-.vercel

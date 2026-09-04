@@ -22,7 +22,7 @@ if DB_URL:
         params = [p for p in query_str.split("&") if p and not p.startswith("api_key=") and not p.startswith("sslmode=")]
         DB_URL = f"{base_url}?{'&'.join(params)}" if params else base_url
 else:
-    is_serverless = os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("VERCEL_ENV")
+    is_serverless = os.getenv("AWS_LAMBDA_FUNCTION_NAME")
     if is_serverless:
         db_file = "/tmp/assistant.db"
     else:
@@ -36,7 +36,7 @@ else:
 
 print(f"[Database Engine] Connecting to: {DB_URL.split('@')[-1] if '@' in DB_URL else DB_URL}")
 
-fallback_db_file = "/tmp/assistant.db" if (os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("VERCEL_ENV")) else os.path.join(os.path.dirname(__file__), "../data/assistant.db")
+fallback_db_file = "/tmp/assistant.db" if os.getenv("AWS_LAMBDA_FUNCTION_NAME") else os.path.join(os.path.dirname(__file__), "../data/assistant.db")
 fallback_engine = create_engine(f"sqlite:///{fallback_db_file}", connect_args={"check_same_thread": False})
 
 try:

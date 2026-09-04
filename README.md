@@ -121,3 +121,27 @@ GOOGLE_CLIENT_SECRET=
 GOOGLE_REFRESH_TOKEN=
 GOOGLE_CALENDAR_ID=primary
 ```
+
+---
+
+## 🌐 Deploying to Render
+
+This repository is pre-configured for 1-click or step-by-step deployment on **Render**.
+
+### Method 1: Render Blueprint (Recommended - Automated 1-Click Setup)
+1. Push this repository to GitHub / GitLab.
+2. Log in to [Render Dashboard](https://dashboard.render.com).
+3. Click **New +** -> **Blueprint**.
+4. Connect your GitHub repository. Render will automatically detect [`render.yaml`](file:///d:/voice_ai/render.yaml) and configure the Web Service with build & start commands!
+5. Fill in optional Environment Variables (`GEMINI_API_KEY`, `OPENAI_API_KEY`, etc.) and click **Apply**.
+
+### Method 2: Manual Web Service Setup on Render
+1. Log in to [Render Dashboard](https://dashboard.render.com).
+2. Click **New +** -> **Web Service**.
+3. Connect your repository.
+4. Set the following settings:
+   - **Environment**: `Python 3`
+   - **Build Command**: `pip install -r requirements.txt && cd frontend && npm install && npm run build`
+   - **Start Command**: `uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT`
+5. Add Environment Variables in Render Dashboard (`GEMINI_API_KEY`, `OPENAI_API_KEY`, etc.).
+6. Click **Deploy Web Service**. Render will host both your FastAPI backend and built React frontend on a live `https://<your-app>.onrender.com` URL!
