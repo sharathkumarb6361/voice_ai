@@ -314,20 +314,6 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
     startRecordingMic();
   };
 
-  // Preset Scenario Quick Fillers
-  const loadScenario = (wfId: string, promptText: string) => {
-    setSelectedWorkflowId(wfId);
-    if (callState !== 'active') {
-      setCallState('active');
-      const wf = workflows.find(w => w.id === wfId);
-      const greetingMsg: ChatMessage = { role: 'assistant', content: wf?.greeting || 'Hello!' };
-      setMessages([greetingMsg]);
-    }
-    setTimeout(() => {
-      handleSendMessage(promptText);
-    }, 500);
-  };
-
   const getLanguageBadge = (lang: string) => {
     switch (lang) {
       case 'hi':
@@ -390,105 +376,8 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
 
       {/* Main Simulator Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* Left Column: Quick Preset Demo Buttons */}
+        {/* Left Column: Config Controls */}
         <div className="lg:col-span-4 space-y-4">
-          <div className="glass-panel p-5 space-y-3">
-            <h3 className="text-xs font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-2">
-              <i className="fa-solid fa-wand-magic-sparkles text-indigo-400" /> Quick Test Scenarios
-            </h3>
-            <p className="text-xs text-slate-400">Click a scenario to test multi-language auto-detection & switching:</p>
-
-            {/* BONUS: Natural Language Switching Demo Button */}
-            <button
-              onClick={() => {
-                setSelectedWorkflowId('wf-cake-01');
-                if (callState !== 'active') {
-                  setCallState('active');
-                  const wf = workflows.find(w => w.id === 'wf-cake-01');
-                  setMessages([{ role: 'assistant', content: wf?.greeting || 'Hello!' }]);
-                }
-                setTimeout(() => {
-                  handleSendMessage('Hello, I want to order a birthday cake.');
-                  setTimeout(() => {
-                    handleSendMessage('Mujhe Belgian Dark Chocolate flavor chahiye, kal shaam tak mil jayega?');
-                  }, 2500);
-                }, 500);
-              }}
-              className="w-full text-left p-3 rounded-xl bg-gradient-to-r from-purple-900/60 to-indigo-900/60 hover:from-purple-800/80 hover:to-indigo-800/80 border border-purple-500/40 transition-all text-xs space-y-1 shadow-lg shadow-purple-500/10"
-            >
-              <div className="font-bold text-purple-200 flex items-center justify-between">
-                <span><i className="fa-solid fa-arrows-rotate text-purple-300 mr-1.5" /> 🔄 Test Language Switch</span>
-                <span className="text-[10px] bg-purple-500/30 px-2 py-0.5 rounded text-purple-200 font-mono">EN ➔ HI Switch</span>
-              </div>
-              <p className="text-slate-300 text-[11px]">Starts in English ("Hello"), then switches mid-conversation to Hindi ("Mujhe chocolate flavor chahiye")</p>
-            </button>
-
-            <button
-              onClick={() => loadScenario('wf-clinic-01', 'Namaskara! Naale sanje 4 gantege Doctor appointment book madi.')}
-              className="w-full text-left p-3 rounded-xl bg-slate-900/60 hover:bg-yellow-900/30 border border-white/5 hover:border-yellow-500/30 transition-all text-xs space-y-1"
-            >
-              <div className="font-bold text-slate-200 flex items-center justify-between">
-                <span><i className="fa-solid fa-language text-yellow-400 mr-1.5" /> Kannada Appointment (ಕನ್ನಡ)</span>
-                <span className="text-[10px] text-yellow-300 font-mono">Kannada / Kanglish</span>
-              </div>
-              <p className="text-slate-400 text-[11px]">"Naale sanje 4 gantege Doctor appointment book madi"</p>
-            </button>
-
-            <button
-              onClick={() => loadScenario('wf-cake-01', 'I want to order a 2kg Belgian Dark Chocolate cake delivered tomorrow evening.')}
-              className="w-full text-left p-3 rounded-xl bg-slate-900/60 hover:bg-indigo-900/30 border border-white/5 hover:border-indigo-500/30 transition-all text-xs space-y-1"
-            >
-              <div className="font-bold text-slate-200 flex items-center justify-between">
-                <span><i className="fa-solid fa-cake-candles text-pink-400 mr-1.5" /> Cake Shop (24h Urgent Rule)</span>
-                <span className="text-[10px] text-amber-300 font-mono">Urgent Rule</span>
-              </div>
-              <p className="text-slate-400 text-[11px]">"Order 2kg Belgian Chocolate cake for tomorrow"</p>
-            </button>
-
-            <button
-              onClick={() => loadScenario('wf-clinic-01', 'I want to schedule a appointment with a Dermatologist tomorrow at 4 PM.')}
-              className="w-full text-left p-3 rounded-xl bg-slate-900/60 hover:bg-purple-900/30 border border-white/5 hover:border-purple-500/30 transition-all text-xs space-y-1"
-            >
-              <div className="font-bold text-slate-200 flex items-center justify-between">
-                <span><i className="fa-solid fa-user-doctor text-purple-400 mr-1.5" /> Clinic Doctor Appointment</span>
-                <span className="text-[10px] text-purple-300 font-mono">Google Calendar Tool</span>
-              </div>
-              <p className="text-slate-400 text-[11px]">"Schedule appointment tomorrow at 4 PM"</p>
-            </button>
-
-            <button
-              onClick={() => loadScenario('wf-logistics-01', 'Please track my parcel with tracking number TRK-9821-IN.')}
-              className="w-full text-left p-3 rounded-xl bg-slate-900/60 hover:bg-cyan-900/30 border border-white/5 hover:border-cyan-500/30 transition-all text-xs space-y-1"
-            >
-              <div className="font-bold text-slate-200 flex items-center justify-between">
-                <span><i className="fa-solid fa-truck-fast text-cyan-400 mr-1.5" /> Parcel Tracking Express</span>
-                <span className="text-[10px] text-cyan-300 font-mono">REST API Tool</span>
-              </div>
-              <p className="text-slate-400 text-[11px]">"Track package #TRK-9821-IN status"</p>
-            </button>
-
-            <button
-              onClick={() => loadScenario('wf-cake-01', 'What are your operating business hours and service availability?')}
-              className="w-full text-left p-3 rounded-xl bg-slate-900/60 hover:bg-amber-900/30 border border-white/5 hover:border-amber-500/30 transition-all text-xs space-y-1"
-            >
-              <div className="font-bold text-slate-200 flex items-center justify-between">
-                <span><i className="fa-solid fa-business-time text-amber-400 mr-1.5" /> Business Hours & Availability</span>
-                <span className="text-[10px] text-amber-300 font-mono">Service Availability</span>
-              </div>
-              <p className="text-slate-400 text-[11px]">"What are your operating business hours and service availability?"</p>
-            </button>
-
-            <button
-              onClick={() => loadScenario('wf-re-01', 'I want to schedule a property site visit for a 3BHK villa.')}
-              className="w-full text-left p-3 rounded-xl bg-slate-900/60 hover:bg-emerald-900/30 border border-white/5 hover:border-emerald-500/30 transition-all text-xs space-y-1"
-            >
-              <div className="font-bold text-slate-200 flex items-center justify-between">
-                <span><i className="fa-solid fa-house-chimney text-emerald-400 mr-1.5" /> Real Estate Site Visit</span>
-                <span className="text-[10px] text-emerald-300 font-mono">Google Calendar Tool</span>
-              </div>
-              <p className="text-slate-400 text-[11px]">"Schedule site visit for 3BHK Villa"</p>
-            </button>
-          </div>
 
           {/* Caller Details Config */}
           <div className="glass-panel p-5 space-y-3">
@@ -643,7 +532,7 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
               {messages.length === 0 ? (
                 <div className="h-64 flex flex-col items-center justify-center text-slate-500 text-xs space-y-2">
                   <i className="fa-solid fa-phone-slash text-3xl text-slate-600 animate-bounce" />
-                  <p>Click "Start Live Voice Call" or select a Quick Test Scenario to start!</p>
+                  <p>Click "Start Live Voice Call" or start speaking to initiate the phone call!</p>
                 </div>
               ) : (
                 messages.map((msg, i) => (
