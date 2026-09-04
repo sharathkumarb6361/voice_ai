@@ -27,8 +27,12 @@ export default function App() {
   const [selectedLanguage, setSelectedLanguage] = useState<string>('auto');
 
   // Business Owner Authentication & Session State
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(true);
-  const [authenticatedBusinessId, setAuthenticatedBusinessId] = useState<string | null>(null);
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
+    return localStorage.getItem('isLoggedIn') === 'true';
+  });
+  const [authenticatedBusinessId, setAuthenticatedBusinessId] = useState<string | null>(() => {
+    return localStorage.getItem('authenticatedBusinessId');
+  });
 
   // App State
   const [businesses, setBusinesses] = useState<Business[]>([]);
@@ -81,12 +85,20 @@ export default function App() {
   const handleLogin = (businessId: string | null) => {
     setAuthenticatedBusinessId(businessId);
     setIsLoggedIn(true);
+    localStorage.setItem('isLoggedIn', 'true');
+    if (businessId) {
+      localStorage.setItem('authenticatedBusinessId', businessId);
+    } else {
+      localStorage.removeItem('authenticatedBusinessId');
+    }
     setActiveTab('dashboard');
   };
 
   const handleLogout = () => {
     setIsLoggedIn(false);
     setAuthenticatedBusinessId(null);
+    localStorage.removeItem('isLoggedIn');
+    localStorage.removeItem('authenticatedBusinessId');
   };
 
   // Handlers
