@@ -57,22 +57,22 @@ class CalendarService:
 
         matched_day_idx = None
         for i, (day, short_day) in enumerate(zip(weekdays, weekdays_short)):
-            if day in date_str_lower or short_day in date_str_lower:
+            if re.search(r'\b' + day + r'\b', date_str_lower) or re.search(r'\b' + short_day + r'\b', date_str_lower):
                 matched_day_idx = i
                 break
 
-        if matched_day_idx is not None:
+        if "day after tomorrow" in date_str_lower or "parso" in date_str_lower:
+            target_date = now + timedelta(days=2)
+        elif "tomorrow" in date_str_lower or "naale" in date_str_lower or "kal" in date_str_lower:
+            target_date = now + timedelta(days=1)
+        elif "next week" in date_str_lower:
+            target_date = now + timedelta(days=7)
+        elif matched_day_idx is not None:
             current_day_idx = now.weekday()
             days_ahead = matched_day_idx - current_day_idx
             if days_ahead <= 0:
                 days_ahead += 7
             target_date = now + timedelta(days=days_ahead)
-        elif "tomorrow" in date_str_lower or "naale" in date_str_lower or "kal" in date_str_lower:
-            target_date = now + timedelta(days=1)
-        elif "day after tomorrow" in date_str_lower or "parso" in date_str_lower:
-            target_date = now + timedelta(days=2)
-        elif "next week" in date_str_lower:
-            target_date = now + timedelta(days=7)
         elif re.match(r'^\d{4}-\d{2}-\d{2}', date_str_lower):
             try:
                 target_date = datetime.strptime(date_str_lower[:10], "%Y-%m-%d")
@@ -90,11 +90,11 @@ class CalendarService:
         is_evening = any(w in time_str_lower or w in date_str_lower for w in ["evening", "pm", "night", "sanje", "shaam", "afternoon"])
         is_morning = any(w in time_str_lower or w in date_str_lower for w in ["morning", "am", "belagge", "subah"])
 
-        twelve_hour_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', time_str_lower)
+        twelve_hour_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?', time_str_lower)
         if twelve_hour_match:
             h = int(twelve_hour_match.group(1))
             m = int(twelve_hour_match.group(2) or 0)
-            ampm = twelve_hour_match.group(3)
+            ampm = (twelve_hour_match.group(3) or "").replace(".", "").lower()
 
             if ampm == "pm" or (not ampm and is_evening and h < 12):
                 if h < 12:

@@ -99,40 +99,82 @@ class AiService:
         b_hours = None
         if workflow.get("business_hours"):
             try:
-                b_hours = json.loads(workflow["business_hours"])
+                b_hours = json.loads(workflow["business_hours"]) if isinstance(workflow["business_hours"], str) else workflow["business_hours"]
             except Exception:
                 b_hours = None
 
         is_after_hours = False
         if b_hours and b_hours.get("enabled"):
-            now_local = datetime.now()
-            current_day = now_local.strftime("%a") # e.g. "Mon", "Tue"
-            current_time_str = now_local.strftime("%H:%M")
+            # Calculate current time in IST (UTC+5:30) or system timezone
+            now_utc = datetime.now(timezone.utc)
+            ist_tz = timezone(timedelta(hours=5, minutes=30))
+            now_local = now_utc.astimezone(ist_tz)
 
-            days_open = b_hours.get("days", ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"])
-            start_t = b_hours.get("start_time", "09:00")
-            end_t = b_hours.get("end_time", "18:00")
+            current_day = now_local.strftime("%a") # e.g. "Fri"
+            current_day_full = now_local.strftime("%A") # e.g. "Friday"
+            current_minutes = now_local.hour * 60 + now_local.minute
 
-            if current_day not in days_open or not (start_t <= current_time_str <= end_t):
+            days_open_raw = b_hours.get("days", ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"])
+            days_open = [d[:3].capitalize() for d in days_open_raw] + [d.capitalize() for d in days_open_raw]
+
+            def time_to_mins(t_str: str) -> int:
+                if not t_str:
+                    return 9 * 60
+                t_str = str(t_str).strip().lower()
+                m12 = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', t_str)
+                if m12:
+                    h = int(m12.group(1))
+                    m = int(m12.group(2) or 0)
+                    ampm = m12.group(3)
+                    if ampm == "pm" and h < 12:
+                        h += 12
+                    elif ampm == "am" and h == 12:
+                        h = 0
+                    return h * 60 + m
+                if ":" in t_str:
+                    parts = t_str.split(":")
+                    try:
+                        return int(parts[0]) * 60 + int(parts[1][:2])
+                    except ValueError:
+                        pass
+                return 9 * 60
+
+            start_t_str = b_hours.get("start_time", "09:00")
+            end_t_str = b_hours.get("end_time", "18:00")
+
+            start_mins = time_to_mins(start_t_str)
+            end_mins = time_to_mins(end_t_str)
+
+            is_open_day = (current_day in days_open or current_day_full in days_open)
+            is_open_time = (start_mins <= current_minutes <= end_mins)
+
+            if not is_open_day or not is_open_time:
                 is_after_hours = True
+                curr_display = now_local.strftime("%a %I:%M %p")
                 executed_tools.append({
                     "tool": "evaluate_business_hours",
-                    "args": {"current_day": current_day, "current_time": current_time_str, "schedule": f"{','.join(days_open)} {start_t}-{end_t}"},
-                    "result": f"Notice: Call received OUTSIDE business hours ({current_day} {current_time_str}). After-hours service response triggered."
+                    "args": {"current_time": curr_display, "schedule": f"{','.join(days_open_raw)} {start_t_str}-{end_t_str}"},
+                    "result": f"Notice: Call received OUTSIDE business hours ({curr_display}). After-hours service response triggered."
                 })
 
         collected_data_dict = {}
 
         # 1. Google Calendar Tool Triggers
-        if any(k in user_lower for k in ["schedule", "book", "appointment", "site visit", "tomorrow", "4 pm", "10 am", "reschedule", "cancel", "beku", "naale", "kal", "chahiye", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]):
+        calendar_keywords = [
+            "schedule", "book", "appointment", "site visit", "tomorrow", "4 pm", "10 am",
+            "reschedule", "cancel", "change", "time", "pm", "am", "p.m.", "a.m.", "slot",
+            "move", "shift", "update", "set", "beku", "naale", "kal", "chahiye",
+            "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
+        ]
+        if any(k in user_lower for k in calendar_keywords):
             if "cancel" in user_lower and ("event" in user_lower or "appointment" in user_lower):
                 res = CalendarService.cancel_event("latest", business_id=business_id)
                 executed_tools.append({"tool": "cancel_calendar_event", "args": {"event_id": "latest"}, "result": res})
                 if res.get("success"):
                     collected_data_dict["appointment_status"] = "Cancelled"
-            elif "reschedule" in user_lower:
+            elif any(w in user_lower for w in ["reschedule", "change", "move", "shift", "update", "set"]):
                 time_match = "16:00"
-                t_match = re.search(r'(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)', user_lower)
+                t_match = re.search(r'(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)', user_lower, re.IGNORECASE)
                 if t_match:
                     time_match = t_match.group(1)
                 date_match = "day after tomorrow" if ("day after" in user_lower or "parso" in user_lower) else ("tomorrow" if ("tomorrow" in user_lower or "kal" in user_lower or "naale" in user_lower) else "today")
@@ -151,7 +193,7 @@ class AiService:
             else:
                 date_match = "tomorrow" if ("tomorrow" in user_lower or "naale" in user_lower or "kal" in user_lower) else ("day after tomorrow" if ("day after" in user_lower or "parso" in user_lower) else "today")
                 time_match = "16:00"
-                t_match = re.search(r'(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)', user_lower)
+                t_match = re.search(r'(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)', user_lower, re.IGNORECASE)
                 if t_match:
                     time_match = t_match.group(1)
 
@@ -245,7 +287,7 @@ class AiService:
             try:
                 print(f"[Groq LLM Engine] Processing request with Llama 3.3 on Groq LPUs...")
                 tools_summary = json.dumps(executed_tools) if executed_tools else "None"
-                after_hours_note = f"CLOSED (After-Hours). Inform caller: '{b_hours.get('after_hours_greeting', '')}'" if (is_after_hours and b_hours) else "OPEN"
+                after_hours_note = f"CLOSED (After-Hours). Call received outside business hours ({b_hours.get('after_hours_greeting', '')}). Process caller request accurately (e.g. rescheduling/booking) while politely reminding them of operating hours." if (is_after_hours and b_hours) else "OPEN"
                 sys_prompt = (
                     f"You are a professional Voice AI Assistant for business '{business['name']}' ({workflow['industry']}). "
                     f"Workflow: '{workflow['name']}'. Default Greeting: '{workflow['greeting']}'. Closing Message: '{workflow['closing_message']}'. "
@@ -328,7 +370,7 @@ class AiService:
                     reply = f"{switch_prefix}Your appointment has been cancelled successfully. Thank you!"
             elif update_tool:
                 if detected_lang == 'kn':
-                    reply = f"{switch_prefix}Nimma appointment update madalaagide. {workflow['closing_message']}"
+                    reply = f"{switch_prefix}Nimma appointment update madalaagide ({new_start if 'new_start' in locals() else 'new time'}). {workflow['closing_message']}"
                 elif detected_lang == 'hi':
                     reply = f"{switch_prefix}Aapka appointment reschedule kar diya gaya hai. {workflow['closing_message']}"
                 else:
@@ -341,24 +383,31 @@ class AiService:
                     reply = f"{switch_prefix}Maine aapka package status check kiya hai. Tracking #{t_res.get('tracking_number')} abhi '{t_res.get('status')}' mein hai ({t_res.get('current_location')}). Agent {t_res.get('driver_name', 'Rohan')} contact karega."
                 else:
                     reply = f"{switch_prefix}I queried our delivery API. Tracking #{t_res.get('tracking_number')} is currently '{t_res.get('status')}' at {t_res.get('current_location')}."
+            elif len(messages) <= 1 and is_after_hours and b_hours and b_hours.get("after_hours_greeting"):
+                reply = f"{switch_prefix}{b_hours['after_hours_greeting']}"
             elif len(messages) <= 2:
-                if is_after_hours and b_hours and b_hours.get("after_hours_greeting"):
-                    reply = f"{switch_prefix}{b_hours['after_hours_greeting']}"
-                elif detected_lang == 'kn':
+                if detected_lang == 'kn':
                     reply = f"{switch_prefix}Namaskara! {business['name']} ge swagatha. Naavu nimma call miss madidve. Nimge hege sahaya madabeku?"
                 elif detected_lang == 'hi':
                     reply = f"{switch_prefix}Namaste! {business['name']} mein aapka swagat hai. Humne aapka missed call dekha. Hum aapki kya madad kar sakte hain?"
                 else:
                     reply = f"{switch_prefix}{workflow['greeting']}"
             else:
-                if detected_lang == 'kn':
+                if is_after_hours and b_hours and b_hours.get("after_hours_greeting"):
+                    reply = f"{switch_prefix}Thank you! We have logged your request. Note that our operating hours are Mon-Sat 9 AM to 6 PM."
+                elif detected_lang == 'kn':
                     reply = f"{switch_prefix}Thumba dhanyavadagalu! {business['name']} ge nimma mahithi note madikollalaagide. {workflow['closing_message']}"
                 elif detected_lang == 'hi':
                     reply = f"{switch_prefix}Bahut dhanyawad! Maine aapke details ({business['name']}) note kar liye hain. {workflow['closing_message']}"
                 else:
                     reply = f"{switch_prefix}Thank you! I have captured all the necessary information for {business['name']}. {workflow['closing_message']}"
 
-        # 5. DB Persistence
+        # 5. DB Persistence & Automatic Follow-Up Tagging
+        followup_status = "Follow Up Needed" if (is_after_hours or urgency in ["Urgent", "Critical"]) else "Pending"
+        if is_after_hours or urgency in ["Urgent", "Critical"]:
+            collected_data_dict["lead_status"] = "Follow Up Needed"
+            collected_data_dict["urgency_tag"] = urgency
+
         rec_id = request_data.get("record_id") or f"rec-{str(uuid.uuid4())[:8]}"
         now_str = datetime.now(timezone.utc).isoformat()
         full_transcript = messages + [{"role": "assistant", "content": reply}]
@@ -370,20 +419,20 @@ class AiService:
             if existing:
                 conn.execute(text("""
                     UPDATE records 
-                    SET collected_data = :cd, ai_summary = :sum, urgency = :urg, transcript = :tr, tools_executed = :te
+                    SET collected_data = :cd, ai_summary = :sum, urgency = :urg, followup_status = :fs, transcript = :tr, tools_executed = :te
                     WHERE id = :id
                 """), {
-                    "cd": json.dumps(collected_data_dict), "sum": summary, "urg": urgency,
+                    "cd": json.dumps(collected_data_dict), "sum": summary, "urg": urgency, "fs": followup_status,
                     "tr": json.dumps(full_transcript), "te": json.dumps(executed_tools), "id": rec_id
                 })
             else:
                 conn.execute(text("""
                     INSERT INTO records (id, business_id, workflow_id, caller_name, caller_phone, intent, collected_data, ai_summary, urgency, followup_status, transcript, tools_executed, created_at)
-                    VALUES (:id, :bid, :wfid, :cname, :cphone, :intent, :cd, :sum, :urg, 'Pending', :tr, :te, :cat)
+                    VALUES (:id, :bid, :wfid, :cname, :cphone, :intent, :cd, :sum, :urg, :fs, :tr, :te, :cat)
                 """), {
                     "id": rec_id, "bid": business_id, "wfid": workflow_id,
                     "cname": caller_name, "cphone": caller_phone, "intent": workflow['name'],
-                    "cd": json.dumps(collected_data_dict), "sum": summary, "urg": urgency,
+                    "cd": json.dumps(collected_data_dict), "sum": summary, "urg": urgency, "fs": followup_status,
                     "tr": json.dumps(full_transcript), "te": json.dumps(executed_tools), "cat": now_str
                 })
             conn.commit()

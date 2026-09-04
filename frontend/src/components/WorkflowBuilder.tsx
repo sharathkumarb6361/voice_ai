@@ -157,11 +157,21 @@ export const WorkflowBuilder: React.FC<WorkflowBuilderProps> = ({
 
     setSaving(true);
     try {
+      const format24h = (t: string, fallback: string) => {
+        if (!t) return fallback;
+        const trimmed = t.trim();
+        if (/^\d{1,2}:\d{2}$/.test(trimmed)) {
+          const [h, m] = trimmed.split(':');
+          return `${h.padStart(2, '0')}:${m}`;
+        }
+        return fallback;
+      };
+
       const bhPayload: BusinessHours = {
         enabled: bhEnabled,
         days: bhDays,
-        start_time: bhStartTime,
-        end_time: bhEndTime,
+        start_time: format24h(bhStartTime, '09:00'),
+        end_time: format24h(bhEndTime, '18:00'),
         after_hours_greeting: bhAfterHoursGreeting,
         after_hours_action: 'flag_after_hours'
       };
