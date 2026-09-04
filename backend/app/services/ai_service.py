@@ -121,24 +121,35 @@ class AiService:
                     "result": f"Notice: Call received OUTSIDE business hours ({current_day} {current_time_str}). After-hours service response triggered."
                 })
 
+        collected_data_dict = {}
+
         # 1. Google Calendar Tool Triggers
-        if any(k in user_lower for k in ["schedule", "book", "appointment", "site visit", "tomorrow", "4 pm", "10 am", "reschedule", "cancel", "beku", "naale", "kal", "chahiye"]):
+        if any(k in user_lower for k in ["schedule", "book", "appointment", "site visit", "tomorrow", "4 pm", "10 am", "reschedule", "cancel", "beku", "naale", "kal", "chahiye", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]):
             if "cancel" in user_lower and ("event" in user_lower or "appointment" in user_lower):
                 res = CalendarService.cancel_event("latest", business_id=business_id)
                 executed_tools.append({"tool": "cancel_calendar_event", "args": {"event_id": "latest"}, "result": res})
+                if res.get("success"):
+                    collected_data_dict["appointment_status"] = "Cancelled"
             elif "reschedule" in user_lower:
                 time_match = "16:00"
                 t_match = re.search(r'(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)', user_lower)
                 if t_match:
                     time_match = t_match.group(1)
-                date_match = "day after tomorrow" if "day after" in user_lower else ("tomorrow" if ("tomorrow" in user_lower or "kal" in user_lower or "naale" in user_lower) else "today")
+                date_match = "day after tomorrow" if ("day after" in user_lower or "parso" in user_lower) else ("tomorrow" if ("tomorrow" in user_lower or "kal" in user_lower or "naale" in user_lower) else "today")
                 target_dt = CalendarService.parse_datetime_input(date_match, time_match)
                 new_start = target_dt.isoformat()
                 new_end = (target_dt + timedelta(minutes=30)).isoformat()
                 res = CalendarService.update_event("latest", new_start_time=new_start, new_end_time=new_end, business_id=business_id)
                 executed_tools.append({"tool": "update_calendar_event", "args": {"event_id": "latest", "start_time": new_start}, "result": res})
+                if res.get("success"):
+                    collected_data_dict["appointment"] = {
+                        "event_id": res.get("event_id"),
+                        "title": res.get("title"),
+                        "start_time": new_start,
+                        "status": "Rescheduled"
+                    }
             else:
-                date_match = "tomorrow" if ("tomorrow" in user_lower or "naale" in user_lower or "kal" in user_lower) else ("day after tomorrow" if "day after" in user_lower else "today")
+                date_match = "tomorrow" if ("tomorrow" in user_lower or "naale" in user_lower or "kal" in user_lower) else ("day after tomorrow" if ("day after" in user_lower or "parso" in user_lower) else "today")
                 time_match = "16:00"
                 t_match = re.search(r'(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)', user_lower)
                 if t_match:
@@ -169,6 +180,15 @@ class AiService:
                         "args": {"title": f"{workflow['industry']} - {caller_name}", "start_time": start_iso},
                         "result": create_res
                     })
+                    if create_res.get("success"):
+                        collected_data_dict["appointment"] = {
+                            "event_id": create_res.get("event_id"),
+                            "google_event_id": create_res.get("google_event_id"),
+                            "title": create_res.get("title"),
+                            "start_time": start_iso,
+                            "end_time": end_iso,
+                            "status": "Confirmed"
+                        }
 
         # 2. External REST API Tool Triggers
         if any(k in user_lower for k in ["trk-", "track", "package", "parcel", "where is", "status"]):
@@ -181,6 +201,8 @@ class AiService:
                 "args": {"tracking_number": tracking_no},
                 "result": tracking_res
             })
+            collected_data_dict["tracking_number"] = tracking_no
+            collected_data_dict["delivery_status"] = tracking_res.get("status")
 
         if any(k in user_lower for k in ["crm", "customer profile", "history"]):
             crm_res = ExternalApiService.lookup_crm_customer(caller_phone)
@@ -189,6 +211,7 @@ class AiService:
                 "args": {"phone_number": caller_phone},
                 "result": crm_res
             })
+            collected_data_dict["crm_profile"] = crm_res
 
         # 3. Evaluate conditional rules
         urgency = "Normal"
@@ -266,13 +289,50 @@ class AiService:
                 lang_names = {"en": "English", "hi": "Hindi (हिन्दी)", "kn": "Kannada (ಕನ್ನಡ)"}
                 switch_prefix = f"*(Language switched to {lang_names.get(detected_lang, 'English')})* "
 
-            if any(t["tool"] == "create_calendar_event" for t in executed_tools):
+            # Check if creation succeeded
+            create_tool = next((t for t in executed_tools if t["tool"] == "create_calendar_event"), None)
+            check_tool = next((t for t in executed_tools if t["tool"] == "check_calendar_availability"), None)
+            cancel_tool = next((t for t in executed_tools if t["tool"] == "cancel_calendar_event"), None)
+            update_tool = next((t for t in executed_tools if t["tool"] == "update_calendar_event"), None)
+
+            if create_tool and create_tool.get("result", {}).get("success"):
+                c_res = create_tool["result"]
+                st_formatted = c_res.get("start_time", "tomorrow")
+                try:
+                    dt = datetime.fromisoformat(st_formatted.replace("Z", "+00:00"))
+                    st_formatted = dt.strftime("%B %d at %I:%M %p")
+                except Exception:
+                    pass
+
                 if detected_lang == 'kn':
-                    reply = f"{switch_prefix}Namaskara! Nimma appointment Google Calendar nalli confirm agide. Naale sanje 4:00 gantege slot reserve madide. {workflow['closing_message']}"
+                    reply = f"{switch_prefix}Namaskara! Nimma appointment Google Calendar nalli confirm agide ({st_formatted}). {workflow['closing_message']}"
                 elif detected_lang == 'hi':
-                    reply = f"{switch_prefix}Aapka appointment Google Calendar par confirm ho gaya hai! Maine kal shaam 4 baje ka slot reserve kar diya hai. {workflow['closing_message']}"
+                    reply = f"{switch_prefix}Aapka appointment Google Calendar par confirm ho gaya hai ({st_formatted})! {workflow['closing_message']}"
                 else:
-                    reply = f"{switch_prefix}Your appointment has been successfully scheduled on Google Calendar for tomorrow at 4:00 PM! {workflow['closing_message']}"
+                    reply = f"{switch_prefix}Your appointment has been successfully scheduled on Google Calendar for {st_formatted}! {workflow['closing_message']}"
+            elif check_tool and check_tool.get("result", {}).get("available") is False:
+                chk_res = check_tool["result"]
+                rec_slots = ", ".join(chk_res.get("recommended_slots", ["5:00 PM", "6:00 PM"]))
+                if detected_lang == 'kn':
+                    reply = f"{switch_prefix}Namaskara! Nimma requested time slot Google Calendar nalli already book agide. Alternative open slots: {rec_slots}. Eavudanna book madabeka?"
+                elif detected_lang == 'hi':
+                    reply = f"{switch_prefix}Namaste! Aapka maanga hua time slot Google Calendar par pehle se booked hai. Subah/shaam ke recommended open slots: {rec_slots} hain. Kya aap inme se koi slot book karna chahenge?"
+                else:
+                    reply = f"{switch_prefix}Your requested time slot is currently booked on Google Calendar. Recommended available open slots: {rec_slots}. Would you like me to book one of these for you?"
+            elif cancel_tool:
+                if detected_lang == 'kn':
+                    reply = f"{switch_prefix}Nimma appointment cancel madalaagide. Dhanyavada!"
+                elif detected_lang == 'hi':
+                    reply = f"{switch_prefix}Aapka appointment cancel kar diya gaya hai. Dhanyawad!"
+                else:
+                    reply = f"{switch_prefix}Your appointment has been cancelled successfully. Thank you!"
+            elif update_tool:
+                if detected_lang == 'kn':
+                    reply = f"{switch_prefix}Nimma appointment update madalaagide. {workflow['closing_message']}"
+                elif detected_lang == 'hi':
+                    reply = f"{switch_prefix}Aapka appointment reschedule kar diya gaya hai. {workflow['closing_message']}"
+                else:
+                    reply = f"{switch_prefix}Your appointment has been rescheduled successfully! {workflow['closing_message']}"
             elif any(t["tool"] == "track_delivery_status" for t in executed_tools):
                 t_res = next((t["result"] for t in executed_tools if t["tool"] == "track_delivery_status"), {})
                 if detected_lang == 'kn':
@@ -313,7 +373,7 @@ class AiService:
                     SET collected_data = :cd, ai_summary = :sum, urgency = :urg, transcript = :tr, tools_executed = :te
                     WHERE id = :id
                 """), {
-                    "cd": json.dumps({}), "sum": summary, "urg": urgency,
+                    "cd": json.dumps(collected_data_dict), "sum": summary, "urg": urgency,
                     "tr": json.dumps(full_transcript), "te": json.dumps(executed_tools), "id": rec_id
                 })
             else:
@@ -323,7 +383,7 @@ class AiService:
                 """), {
                     "id": rec_id, "bid": business_id, "wfid": workflow_id,
                     "cname": caller_name, "cphone": caller_phone, "intent": workflow['name'],
-                    "cd": json.dumps({}), "sum": summary, "urg": urgency,
+                    "cd": json.dumps(collected_data_dict), "sum": summary, "urg": urgency,
                     "tr": json.dumps(full_transcript), "te": json.dumps(executed_tools), "cat": now_str
                 })
             conn.commit()

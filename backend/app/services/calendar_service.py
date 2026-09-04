@@ -52,17 +52,33 @@ class CalendarService:
 
         # Parse Date
         target_date = now
-        if "tomorrow" in date_str_lower or "naale" in date_str_lower or "kal" in date_str_lower:
+        weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+        weekdays_short = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+        matched_day_idx = None
+        for i, (day, short_day) in enumerate(zip(weekdays, weekdays_short)):
+            if day in date_str_lower or short_day in date_str_lower:
+                matched_day_idx = i
+                break
+
+        if matched_day_idx is not None:
+            current_day_idx = now.weekday()
+            days_ahead = matched_day_idx - current_day_idx
+            if days_ahead <= 0:
+                days_ahead += 7
+            target_date = now + timedelta(days=days_ahead)
+        elif "tomorrow" in date_str_lower or "naale" in date_str_lower or "kal" in date_str_lower:
             target_date = now + timedelta(days=1)
-        elif "day after tomorrow" in date_str_lower:
+        elif "day after tomorrow" in date_str_lower or "parso" in date_str_lower:
             target_date = now + timedelta(days=2)
+        elif "next week" in date_str_lower:
+            target_date = now + timedelta(days=7)
         elif re.match(r'^\d{4}-\d{2}-\d{2}', date_str_lower):
             try:
                 target_date = datetime.strptime(date_str_lower[:10], "%Y-%m-%d")
             except ValueError:
                 target_date = now
         else:
-            # Check for day offset like "+2 days"
             day_offset_match = re.search(r'(\d+)\s*days?', date_str_lower)
             if day_offset_match:
                 target_date = now + timedelta(days=int(day_offset_match.group(1)))
@@ -71,16 +87,24 @@ class CalendarService:
         hours = 16
         minutes = 0
 
-        # Match 12-hour format like 4:30 pm or 10 am
-        twelve_hour_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)', time_str_lower)
+        is_evening = any(w in time_str_lower or w in date_str_lower for w in ["evening", "pm", "night", "sanje", "shaam", "afternoon"])
+        is_morning = any(w in time_str_lower or w in date_str_lower for w in ["morning", "am", "belagge", "subah"])
+
+        twelve_hour_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', time_str_lower)
         if twelve_hour_match:
             h = int(twelve_hour_match.group(1))
             m = int(twelve_hour_match.group(2) or 0)
             ampm = twelve_hour_match.group(3)
-            if ampm == "pm" and h < 12:
-                h += 12
-            elif ampm == "am" and h == 12:
-                h = 0
+
+            if ampm == "pm" or (not ampm and is_evening and h < 12):
+                if h < 12:
+                    h += 12
+            elif ampm == "am" or (not ampm and is_morning):
+                if h == 12:
+                    h = 0
+            elif not ampm:
+                if 1 <= h <= 7:
+                    h += 12
             hours, minutes = h, m
         elif ":" in time_str_lower:
             parts = time_str_lower.split(":")
@@ -89,14 +113,6 @@ class CalendarService:
                 minutes = int(parts[1][:2])
             except ValueError:
                 hours, minutes = 16, 0
-        else:
-            # Check single digit hour like "4" or "11"
-            digit_match = re.search(r'(\d{1,2})', time_str_lower)
-            if digit_match:
-                h = int(digit_match.group(1))
-                if 1 <= h <= 7: # Assume afternoon for small numbers like 4
-                    h += 12
-                hours = h
 
         return target_date.replace(hour=hours, minute=minutes, second=0, microsecond=0)
 
@@ -320,21 +336,54 @@ class CalendarService:
 
     @staticmethod
     def sync_events():
-        """Trigger sync check with Google Calendar API."""
+        """Trigger sync check with Google Calendar API and sync to database."""
         gcal_service, cal_id = CalendarService.get_gcal_service()
         if not gcal_service:
             return {
                 "synced": False,
+                "count": 0,
                 "message": "Google Calendar API credentials not configured in .env. Running on local SQLite database store."
             }
 
         try:
-            events_result = gcal_service.events().list(calendarId=cal_id, maxResults=25).execute()
+            events_result = gcal_service.events().list(calendarId=cal_id, maxResults=50).execute()
             items = events_result.get('items', [])
+            synced_count = 0
+
+            with get_db_connection() as conn:
+                for item in items:
+                    g_id = item.get('id')
+                    summary = item.get('summary', 'Google Calendar Event')
+                    start_data = item.get('start', {})
+                    end_data = item.get('end', {})
+                    start_time = start_data.get('dateTime') or start_data.get('date') or datetime.now().isoformat()
+                    end_time = end_data.get('dateTime') or end_data.get('date') or datetime.now().isoformat()
+                    description = item.get('description', '')
+
+                    # Check if event already exists in DB
+                    existing = conn.execute(
+                        text("SELECT id FROM calendar_events WHERE google_event_id = :gid OR id = :gid"),
+                        {"gid": g_id}
+                    ).fetchone()
+
+                    if not existing:
+                        evt_id = f"gcal-{str(uuid.uuid4())[:8]}"
+                        now = datetime.now(timezone.utc).isoformat()
+                        conn.execute(text("""
+                            INSERT INTO calendar_events (id, business_id, title, start_time, end_time, attendee_name, attendee_phone, description, status, google_event_id, created_at)
+                            VALUES (:id, 'biz-clinic-01', :title, :st, :et, 'Google Client', '+91 98765 00000', :desc, 'Confirmed', :gid, :cat)
+                        """), {
+                            "id": evt_id, "title": summary, "st": start_time, "et": end_time,
+                            "desc": description, "gid": g_id, "cat": now
+                        })
+                        synced_count += 1
+                conn.commit()
+
             return {
                 "synced": True,
                 "count": len(items),
-                "message": f"Successfully synchronized with Google Calendar API ({len(items)} events fetched)."
+                "new_synced": synced_count,
+                "message": f"Successfully synchronized with Google Calendar API ({len(items)} events total, {synced_count} new events imported to local DB)."
             }
         except Exception as e:
             return {
