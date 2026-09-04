@@ -276,11 +276,7 @@ export const WorkflowBuilder: React.FC<WorkflowBuilderProps> = ({
                 className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-slate-200 focus:outline-none focus:border-indigo-500"
               >
                 <option value="Cake Shop" className="bg-slate-900">Cake Shop</option>
-                <option value="Clinic / Healthcare" className="bg-slate-900">Clinic / Healthcare</option>
                 <option value="Logistics & Delivery" className="bg-slate-900">Logistics & Delivery</option>
-                <option value="Real Estate" className="bg-slate-900">Real Estate</option>
-                <option value="Home Repair Services" className="bg-slate-900">Home Repair Services</option>
-                <option value="Custom Business" className="bg-slate-900">Custom Business</option>
               </select>
             </div>
           </div>

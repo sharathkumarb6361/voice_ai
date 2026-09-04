@@ -179,11 +179,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-slate-200 focus:outline-none cursor-pointer"
                 >
                   <option value="Cake Shop" className="bg-slate-900">Cake Shop</option>
-                  <option value="Clinic / Healthcare" className="bg-slate-900">Clinic / Healthcare</option>
                   <option value="Logistics & Delivery" className="bg-slate-900">Logistics & Delivery</option>
-                  <option value="Real Estate" className="bg-slate-900">Real Estate</option>
-                  <option value="Home Repair" className="bg-slate-900">Home Repair</option>
-                  <option value="Custom Business" className="bg-slate-900">Custom Business</option>
                 </select>
               </div>
 

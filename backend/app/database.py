@@ -212,8 +212,14 @@ def init_db():
         print(f"[Database Warning] Database initialization deferred/failed: {e}")
 
 def seed_default_data(conn):
-    print("Verifying & seeding multi-industry businesses, workflows, & calendar events...")
+    print("Verifying & seeding target businesses (Cake Shop & Logistics/Delivery)...")
     now = datetime.now(timezone.utc).isoformat()
+
+    # Purge legacy non-target sample businesses if present
+    conn.execute(text("DELETE FROM businesses WHERE id NOT IN ('biz-cake-01', 'biz-logistics-01')"))
+    conn.execute(text("DELETE FROM workflows WHERE business_id NOT IN ('biz-cake-01', 'biz-logistics-01')"))
+    conn.execute(text("DELETE FROM calendar_events WHERE business_id NOT IN ('biz-cake-01', 'biz-logistics-01')"))
+    conn.execute(text("DELETE FROM records WHERE business_id NOT IN ('biz-cake-01', 'biz-logistics-01')"))
 
     # 1. Cake Shop Business
     cake_biz_id = "biz-cake-01"
@@ -258,40 +264,7 @@ def seed_default_data(conn):
             "language": "en-hi", "business_hours": default_bh, "created_at": now
         })
 
-    # 2. Clinic Business
-    clinic_biz_id = "biz-clinic-01"
-    clinic_wf_id = "wf-clinic-01"
-    if not conn.execute(text("SELECT id FROM businesses WHERE id = :id"), {"id": clinic_biz_id}).fetchone():
-        conn.execute(text("""
-            INSERT INTO businesses (id, name, industry, owner_name, phone, email, address, created_at)
-            VALUES (:id, :name, :industry, :owner_name, :phone, :email, :address, :created_at)
-        """), {
-            "id": clinic_biz_id, "name": "Apex Health Care & Multi-Specialty Clinic", "industry": "Clinic / Healthcare",
-            "owner_name": "Dr. Ramesh Kumar", "phone": "+91 91234 56789", "email": "contact@apexcare.com",
-            "address": "Koramangala 5th Block, Bengaluru", "created_at": now
-        })
-        clinic_fields = [
-            {"key": "request_type", "label": "Request Type", "type": "select", "options": ["Book Appointment", "Reschedule Appointment", "Cancel Appointment", "General Enquiry"], "required": True},
-            {"key": "patient_name", "label": "Patient Name", "type": "text", "required": True},
-            {"key": "specialty_or_doctor", "label": "Specialty / Doctor", "type": "select", "options": ["General Physician", "Dermatologist", "Cardiologist", "Pediatrician", "Dentist"], "required": True},
-            {"key": "preferred_date_time", "label": "Preferred Date & Time", "type": "datetime", "required": True},
-            {"key": "symptoms_or_notes", "label": "Symptoms / Brief Note", "type": "text", "required": False}
-        ]
-        clinic_conditions = [
-            {"field": "request_type", "operator": "equals", "value": "Book Appointment", "tool_action": "check_and_create_google_calendar", "note": "Checks calendar availability and creates Google Calendar event"}
-        ]
-        conn.execute(text("""
-            INSERT INTO workflows (id, business_id, name, industry, trigger_event, greeting, fields, conditions, actions, closing_message, language, business_hours, is_active, created_at)
-            VALUES (:id, :business_id, :name, :industry, :trigger_event, :greeting, :fields, :conditions, :actions, :closing_message, :language, :business_hours, 1, :created_at)
-        """), {
-            "id": clinic_wf_id, "business_id": clinic_biz_id, "name": "Patient Appointment Booking & Callback", "industry": "Clinic / Healthcare",
-            "trigger_event": "Missed Call", "greeting": "Hello! You have reached Apex Health Clinic. We noticed we missed your call. Are you calling to book a doctor appointment, reschedule, or ask an enquiry?",
-            "fields": json.dumps(clinic_fields), "conditions": json.dumps(clinic_conditions), "actions": json.dumps(["create_google_calendar_event", "send_patient_confirmation_sms"]),
-            "closing_message": "Your appointment request has been scheduled on our calendar. Please do not take this as medical emergency advice. Our front desk will verify your details.",
-            "language": "en-hi", "business_hours": default_bh, "created_at": now
-        })
-
-    # 3. Logistics & Delivery Business
+    # 2. Logistics & Delivery Business
     logistics_biz_id = "biz-logistics-01"
     logistics_wf_id = "wf-logistics-01"
     if not conn.execute(text("SELECT id FROM businesses WHERE id = :id"), {"id": logistics_biz_id}).fetchone():
@@ -327,68 +300,6 @@ def seed_default_data(conn):
             "language": "en-hi", "business_hours": default_bh, "created_at": now
         })
 
-    # 4. Real Estate Agency Business
-    re_biz_id = "biz-re-01"
-    re_wf_id = "wf-re-01"
-    if not conn.execute(text("SELECT id FROM businesses WHERE id = :id"), {"id": re_biz_id}).fetchone():
-        conn.execute(text("""
-            INSERT INTO businesses (id, name, industry, owner_name, phone, email, address, created_at)
-            VALUES (:id, :name, :industry, :owner_name, :phone, :email, :address, :created_at)
-        """), {
-            "id": re_biz_id, "name": "Prime Haven Realty & Property Solutions", "industry": "Real Estate",
-            "owner_name": "Rajesh Mehta", "phone": "+91 97766 55443", "email": "sales@primehaven.com",
-            "address": "Whitefield Main Road, Bengaluru", "created_at": now
-        })
-        re_fields = [
-            {"key": "property_type", "label": "Property Type", "type": "select", "options": ["3BHK Villa", "2BHK Apartment", "Commercial Plot", "Penthouse"], "required": True},
-            {"key": "budget_range", "label": "Budget Range", "type": "text", "required": True, "description": "e.g. 80 Lakhs - 1.5 Crore"},
-            {"key": "visit_date_time", "label": "Preferred Site Visit Time", "type": "datetime", "required": True}
-        ]
-        re_conditions = [
-            {"field": "visit_date_time", "operator": "exists", "tool_action": "create_calendar_event", "note": "Schedules property site visit on Google Calendar"}
-        ]
-        conn.execute(text("""
-            INSERT INTO workflows (id, business_id, name, industry, trigger_event, greeting, fields, conditions, actions, closing_message, language, business_hours, is_active, created_at)
-            VALUES (:id, :business_id, :name, :industry, :trigger_event, :greeting, :fields, :conditions, :actions, :closing_message, :language, :business_hours, 1, :created_at)
-        """), {
-            "id": re_wf_id, "business_id": re_biz_id, "name": "Property Lead Qualification & Site Visit", "industry": "Real Estate",
-            "trigger_event": "Missed Call", "greeting": "Hello! Thank you for contacting Prime Haven Realty. We missed your call. Are you interested in scheduling a property site visit or inquiring about buyer listings?",
-            "fields": json.dumps(re_fields), "conditions": json.dumps(re_conditions), "actions": json.dumps(["schedule_site_visit_gcal", "assign_lead_to_agent"]),
-            "closing_message": "Your property site visit has been scheduled on Google Calendar. Our lead relationship executive will guide you at the location.",
-            "language": "en-hi", "business_hours": default_bh, "created_at": now
-        })
-
-    # 5. Home & Repair Service Business
-    repair_biz_id = "biz-repair-01"
-    repair_wf_id = "wf-repair-01"
-    if not conn.execute(text("SELECT id FROM businesses WHERE id = :id"), {"id": repair_biz_id}).fetchone():
-        conn.execute(text("""
-            INSERT INTO businesses (id, name, industry, owner_name, phone, email, address, created_at)
-            VALUES (:id, :name, :industry, :owner_name, :phone, :email, :address, :created_at)
-        """), {
-            "id": repair_biz_id, "name": "FixIt Pro Maintenance & Emergency Repair", "industry": "Home Repair Services",
-            "owner_name": "Suresh Babu", "phone": "+91 96655 44332", "email": "dispatch@fixitpro.com",
-            "address": "Jayanagar 4th Block, Bengaluru", "created_at": now
-        })
-        repair_fields = [
-            {"key": "service_category", "label": "Service Category", "type": "select", "options": ["Plumbing Emergency", "Electrical Repair", "AC Servicing", "Carpentry"], "required": True},
-            {"key": "urgency_level", "label": "Urgency Level", "type": "select", "options": ["Immediate Emergency", "Same Day", "Scheduled"], "required": True},
-            {"key": "problem_description", "label": "Problem Description", "type": "text", "required": False}
-        ]
-        repair_conditions = [
-            {"field": "urgency_level", "operator": "equals", "value": "Immediate Emergency", "action_override": "flag_critical", "note": "Flag CRITICAL for immediate technician dispatch"}
-        ]
-        conn.execute(text("""
-            INSERT INTO workflows (id, business_id, name, industry, trigger_event, greeting, fields, conditions, actions, closing_message, language, business_hours, is_active, created_at)
-            VALUES (:id, :business_id, :name, :industry, :trigger_event, :greeting, :fields, :conditions, :actions, :closing_message, :language, :business_hours, 1, :created_at)
-        """), {
-            "id": repair_wf_id, "business_id": repair_biz_id, "name": "Emergency Repair Request & Technician Dispatch", "industry": "Home Repair Services",
-            "trigger_event": "Missed Call", "greeting": "Hello! FixIt Pro Repair Services missed your call. What repair service do you require, and is this an immediate emergency?",
-            "fields": json.dumps(repair_fields), "conditions": json.dumps(repair_conditions), "actions": json.dumps(["dispatch_technician_alert", "send_status_tracking_sms"]),
-            "closing_message": "Your repair request has been logged. If marked CRITICAL emergency, our nearest technician is already dispatched to your location.",
-            "language": "en-hi", "business_hours": default_bh, "created_at": now
-        })
-
     # Seed Sample Call Records if empty
     rec_count = conn.execute(text("SELECT COUNT(*) FROM records")).fetchone()[0]
     if rec_count == 0:
@@ -415,31 +326,31 @@ def seed_default_data(conn):
             "created_at": (datetime.now() - timedelta(hours=2)).isoformat()
         })
 
-    # Seed Sample Google Calendar Events if empty
+    # Seed Sample Calendar Events if empty
     cal_count = conn.execute(text("SELECT COUNT(*) FROM calendar_events")).fetchone()[0]
     if cal_count == 0:
         start1 = datetime.now() + timedelta(days=1)
-        start1 = start1.replace(hour=16, minute=0, second=0, microsecond=0)
+        start1 = start1.replace(hour=17, minute=0, second=0, microsecond=0)
         end1 = start1 + timedelta(minutes=30)
 
         start2 = datetime.now() + timedelta(days=2)
-        start2 = start2.replace(hour=11, minute=0, second=0, microsecond=0)
-        end2 = start2 + timedelta(minutes=45)
+        start2 = start2.replace(hour=14, minute=0, second=0, microsecond=0)
+        end2 = start2 + timedelta(minutes=30)
 
         conn.execute(text("""
             INSERT INTO calendar_events (id, business_id, title, start_time, end_time, attendee_name, attendee_phone, description, status, google_event_id, created_at)
             VALUES (:id, :bid, :title, :st, :et, :aname, :aphone, :desc, 'Confirmed', :gid, :cat)
         """), {
-            "id": "cal-seed-01", "bid": clinic_biz_id, "title": "Clinic / Healthcare - Meera Nair",
-            "st": start1.isoformat(), "et": end1.isoformat(), "aname": "Meera Nair", "aphone": "+91 97441 22334",
-            "desc": "Scheduled via Voice AI Assistant (Dermatology Consultation)", "gid": "gcal_py_cal_991823", "cat": now
+            "id": "cal-seed-01", "bid": cake_biz_id, "title": "Cake Order (Dark Chocolate - 2kg) - Ankit Mehta",
+            "st": start1.isoformat(), "et": end1.isoformat(), "aname": "Ankit Mehta", "aphone": "+91 98765 12345",
+            "desc": "Scheduled via Voice AI Assistant (Sweet Treats Bakery)", "gid": "gcal_py_cal_991823", "cat": now
         })
 
         conn.execute(text("""
             INSERT INTO calendar_events (id, business_id, title, start_time, end_time, attendee_name, attendee_phone, description, status, google_event_id, created_at)
             VALUES (:id, :bid, :title, :st, :et, :aname, :aphone, :desc, 'Confirmed', :gid, :cat)
         """), {
-            "id": "cal-seed-02", "bid": re_biz_id, "title": "Real Estate - Ankit Mehta",
-            "st": start2.isoformat(), "et": end2.isoformat(), "aname": "Ankit Mehta", "aphone": "+91 98765 12345",
-            "desc": "Scheduled via Voice AI Assistant (3BHK Villa Property Site Visit)", "gid": "gcal_py_cal_991824", "cat": now
+            "id": "cal-seed-02", "bid": logistics_biz_id, "title": "Delivery Pickup (Indiranagar -> Whitefield) - Vikram Singh",
+            "st": start2.isoformat(), "et": end2.isoformat(), "aname": "Vikram Singh", "aphone": "+91 99887 76655",
+            "desc": "Scheduled via Voice AI Assistant (SwiftMove Express)", "gid": "gcal_py_cal_991824", "cat": now
         })

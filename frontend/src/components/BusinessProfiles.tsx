@@ -135,11 +135,7 @@ export const BusinessProfiles: React.FC<BusinessProfilesProps> = ({ businesses, 
                   className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
                 >
                   <option value="Cake Shop">Cake Shop & Bakery</option>
-                  <option value="Clinic / Healthcare">Clinic / Doctor</option>
                   <option value="Logistics & Delivery">Logistics & Delivery</option>
-                  <option value="Real Estate">Real Estate</option>
-                  <option value="Home & Repair Services">Home & Repair Services</option>
-                  <option value="Custom Business">Other Custom Business</option>
                 </select>
               </div>
 
