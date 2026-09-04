@@ -213,7 +213,7 @@ class CalendarService:
                 INSERT INTO calendar_events (id, business_id, title, start_time, end_time, attendee_name, attendee_phone, description, status, google_event_id, created_at)
                 VALUES (:id, :bid, :title, :st, :et, :aname, :aphone, :desc, 'Confirmed', :gid, :cat)
             """), {
-                "id": evt_id, "bid": business_id or "biz-clinic-01", "title": title,
+                "id": evt_id, "bid": business_id or "biz-cake-01", "title": title,
                 "st": start_time, "et": end_time, "aname": attendee_name, "aphone": attendee_phone,
                 "desc": description or "", "gid": gcal_id, "cat": now
             })

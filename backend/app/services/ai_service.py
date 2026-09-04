@@ -293,39 +293,45 @@ class AiService:
                     })
                     collected_data_dict["owner_structured_summary"] = owner_summary.get("formatted_summary")
 
-                if check_res.get("available") is True:
-                    if is_cake_shop:
-                        evt_title = f"Cake Order ({flavor} - {weight}kg) - {caller_name}"
-                        evt_desc = f"Voice AI Cake Order: {cake_type} ({flavor}, {weight}kg). Delivery: {delivery_pref}. Custom Msg: '{custom_msg or 'None'}'. Customer: {caller_name} ({caller_phone})"
-                    else:
-                        evt_title = f"{workflow['industry']} - {caller_name}"
-                        evt_desc = f"Scheduled via Voice AI Assistant ({workflow['name']})"
+                # Always create/book the calendar event for cake orders and appointments
+                if not check_res.get("available") and check_res.get("recommended_slots"):
+                    rec_slot_str = check_res["recommended_slots"][0]
+                    alt_dt = CalendarService.parse_datetime_input(date_match, rec_slot_str)
+                    start_iso = alt_dt.isoformat()
+                    end_iso = (alt_dt + timedelta(minutes=30)).isoformat()
 
-                    create_res = CalendarService.create_event(
-                        business_id=business_id,
-                        title=evt_title,
-                        start_time=start_iso,
-                        end_time=end_iso,
-                        attendee_name=caller_name,
-                        attendee_phone=caller_phone,
-                        description=evt_desc
-                    )
-                    executed_tools.append({
-                        "tool": "create_calendar_event",
-                        "args": {"title": evt_title, "start_time": start_iso},
-                        "result": create_res
-                    })
-                    if create_res.get("success"):
-                        collected_data_dict["appointment"] = {
-                            "event_id": create_res.get("event_id"),
-                            "google_event_id": create_res.get("google_event_id"),
-                            "title": create_res.get("title"),
-                            "start_time": start_iso,
-                            "end_time": end_iso,
-                            "flavor": flavor,
-                            "weight_kg": weight,
-                            "status": "Confirmed"
-                        }
+                if is_cake_shop:
+                    evt_title = f"Cake Order ({flavor} - {weight}kg) - {caller_name}"
+                    evt_desc = f"Voice AI Cake Order: {cake_type} ({flavor}, {weight}kg). Delivery: {delivery_pref}. Custom Msg: '{custom_msg or 'None'}'. Customer: {caller_name} ({caller_phone})"
+                else:
+                    evt_title = f"{workflow['industry']} - {caller_name}"
+                    evt_desc = f"Scheduled via Voice AI Assistant ({workflow['name']})"
+
+                create_res = CalendarService.create_event(
+                    business_id=business_id,
+                    title=evt_title,
+                    start_time=start_iso,
+                    end_time=end_iso,
+                    attendee_name=caller_name,
+                    attendee_phone=caller_phone,
+                    description=evt_desc
+                )
+                executed_tools.append({
+                    "tool": "create_calendar_event",
+                    "args": {"title": evt_title, "start_time": start_iso},
+                    "result": create_res
+                })
+                if create_res.get("success"):
+                    collected_data_dict["appointment"] = {
+                        "event_id": create_res.get("event_id"),
+                        "google_event_id": create_res.get("google_event_id"),
+                        "title": create_res.get("title"),
+                        "start_time": start_iso,
+                        "end_time": end_iso,
+                        "flavor": flavor,
+                        "weight_kg": weight,
+                        "status": "Confirmed"
+                    }
 
         # 2. External REST API & Logistics Tool Triggers
         if any(k in user_lower for k in ["new delivery", "schedule delivery", "send package", "ship parcel", "pickup location", "dispatch parcel"]):
