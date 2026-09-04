@@ -259,7 +259,62 @@ class AiService:
                             "status": "Confirmed"
                         }
 
-        # 2. External REST API Tool Triggers
+        # 2. External REST API & Logistics Tool Triggers
+        if any(k in user_lower for k in ["new delivery", "schedule delivery", "send package", "ship parcel", "pickup location", "dispatch parcel"]):
+            pickup = "Indiranagar, Bengaluru"
+            p_match = re.search(r'from\s+([a-zA-Z0-9\s]+?)(?=\s+to|\s+at|\s+for|\s+$)', user_lower, re.IGNORECASE)
+            if p_match:
+                pickup = p_match.group(1).title()
+
+            delivery = "Whitefield, Bengaluru"
+            d_match = re.search(r'to\s+([a-zA-Z0-9\s]+?)(?=\s+tomorrow|\s+today|\s+at|\s+for|\s+on|\s+$)', user_lower, re.IGNORECASE)
+            if d_match:
+                delivery = d_match.group(1).strip().title()
+
+            pkg_type = "Parcel / Box"
+            if any(w in user_lower for w in ["document", "file", "paper"]):
+                pkg_type = "Documents & Files"
+            elif any(w in user_lower for w in ["electronic", "laptop", "phone"]):
+                pkg_type = "Electronics"
+            elif any(w in user_lower for w in ["fragile", "glass"]):
+                pkg_type = "Fragile Item"
+
+            pref_time = "Tomorrow 4:00 PM"
+            if "today" in user_lower:
+                pref_time = "Today 5:00 PM"
+
+            del_res = ExternalApiService.create_delivery_request(
+                pickup_location=pickup,
+                delivery_location=delivery,
+                package_type=pkg_type,
+                preferred_time=pref_time,
+                caller_name=caller_name,
+                caller_phone=caller_phone
+            )
+            executed_tools.append({
+                "tool": "create_delivery_request",
+                "args": {"pickup": pickup, "delivery": delivery, "package_type": pkg_type},
+                "result": del_res
+            })
+            collected_data_dict["new_delivery_request"] = del_res
+
+        if any(k in user_lower for k in ["help", "support", "issue", "callback", "delayed", "complaint", "agent"]):
+            match = re.search(r'TRK-[A-Z0-9-]+', last_user_msg, re.IGNORECASE)
+            tracking_no = match.group(0).upper() if match else None
+
+            cb_res = ExternalApiService.create_callback_task(
+                issue_summary="Customer requested support / help with existing delivery",
+                tracking_number=tracking_no,
+                caller_name=caller_name,
+                caller_phone=caller_phone
+            )
+            executed_tools.append({
+                "tool": "create_callback_task",
+                "args": {"issue": "Delivery Support Callback", "tracking_number": tracking_no},
+                "result": cb_res
+            })
+            collected_data_dict["callback_task"] = cb_res
+
         if any(k in user_lower for k in ["trk-", "track", "package", "parcel", "where is", "status"]):
             match = re.search(r'TRK-[A-Z0-9-]+', last_user_msg, re.IGNORECASE)
             tracking_no = match.group(0).upper() if match else "TRK-9821-IN"
@@ -402,6 +457,22 @@ class AiService:
                     reply = f"{switch_prefix}Aapka appointment reschedule kar diya gaya hai. {workflow['closing_message']}"
                 else:
                     reply = f"{switch_prefix}Your appointment has been rescheduled successfully! {workflow['closing_message']}"
+            elif any(t["tool"] == "create_delivery_request" for t in executed_tools):
+                d_res = next((t["result"] for t in executed_tools if t["tool"] == "create_delivery_request"), {})
+                if detected_lang == 'kn':
+                    reply = f"{switch_prefix}Namaskara! Nimma hosadhu delivery request {d_res.get('delivery_id')} confirm agide ({d_res.get('pickup_location')} -> {d_res.get('delivery_location')}). {workflow['closing_message']}"
+                elif detected_lang == 'hi':
+                    reply = f"{switch_prefix}Aapka naya delivery request {d_res.get('delivery_id')} register ho gaya hai ({d_res.get('pickup_location')} se {d_res.get('delivery_location')})! {workflow['closing_message']}"
+                else:
+                    reply = f"{switch_prefix}Your new delivery request ({d_res.get('delivery_id')}) from {d_res.get('pickup_location')} to {d_res.get('delivery_location')} has been successfully registered! {workflow['closing_message']}"
+            elif any(t["tool"] == "create_callback_task" for t in executed_tools):
+                cb_res = next((t["result"] for t in executed_tools if t["tool"] == "create_callback_task"), {})
+                if detected_lang == 'kn':
+                    reply = f"{switch_prefix}Nimma delivery support callback task ({cb_res.get('task_id')}) dispatch team ge assign agide. Agent nimge call madthare."
+                elif detected_lang == 'hi':
+                    reply = f"{switch_prefix}Aapka delivery support callback task ({cb_res.get('task_id')}) dispatch team ko assign kar diya gaya hai. Agent aapko call karega."
+                else:
+                    reply = f"{switch_prefix}A dispatch callback task ({cb_res.get('task_id')}) has been assigned to our customer support team regarding your delivery inquiry. Our agent will call you back shortly."
             elif any(t["tool"] == "track_delivery_status" for t in executed_tools):
                 t_res = next((t["result"] for t in executed_tools if t["tool"] == "track_delivery_status"), {})
                 if detected_lang == 'kn':

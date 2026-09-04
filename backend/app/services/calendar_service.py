@@ -114,6 +114,8 @@ class CalendarService:
             except ValueError:
                 hours, minutes = 16, 0
 
+        hours = max(0, min(hours, 23))
+        minutes = max(0, min(minutes, 59))
         return target_date.replace(hour=hours, minute=minutes, second=0, microsecond=0)
 
     @staticmethod

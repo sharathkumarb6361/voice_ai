@@ -57,3 +57,37 @@ class ExternalApiService:
             "last_interaction": "First call today",
             "notes": "New prospective lead."
         }
+
+    @staticmethod
+    def create_delivery_request(pickup_location: str, delivery_location: str, package_type: str = "Parcel", preferred_time: str = "Asap", caller_name: str = "Customer", caller_phone: str = "+91 98765 43210"):
+        print(f"[Python Tool Call: create_delivery_request] Creating new delivery request: {pickup_location} -> {delivery_location}")
+        req_id = f"DEL-{str(hash(pickup_location + delivery_location) % 9000 + 1000)}-IN"
+        return {
+            "success": True,
+            "delivery_id": req_id,
+            "status": "Scheduled / Pickup Pending",
+            "pickup_location": pickup_location or "Indiranagar, Bengaluru",
+            "delivery_location": delivery_location or "Whitefield, Bengaluru",
+            "package_type": package_type or "Parcel / Box",
+            "preferred_time": preferred_time or "Tomorrow 4:00 PM",
+            "caller_name": caller_name,
+            "caller_phone": caller_phone,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "message": f"New delivery request '{req_id}' registered successfully from {pickup_location} to {delivery_location}."
+        }
+
+    @staticmethod
+    def create_callback_task(issue_summary: str, tracking_number: str = None, caller_name: str = "Customer", caller_phone: str = "+91 98765 43210"):
+        print(f"[Python Tool Call: create_callback_task] Creating dispatch callback task for: {caller_name} ({caller_phone})")
+        task_id = f"TSK-{str(hash(caller_phone + (issue_summary or '')) % 9000 + 1000)}-IN"
+        return {
+            "success": True,
+            "task_id": task_id,
+            "status": "Callback Task Assigned to Dispatch",
+            "tracking_number": tracking_number or "TRK-9821-IN",
+            "issue_summary": issue_summary or "Customer requested support with existing delivery",
+            "caller_name": caller_name,
+            "caller_phone": caller_phone,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "message": f"Callback task '{task_id}' assigned to dispatch team for {caller_name}."
+        }

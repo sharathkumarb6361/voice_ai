@@ -304,20 +304,26 @@ def seed_default_data(conn):
             "address": "Electronic City Phase 1, Bengaluru", "created_at": now
         })
         logistics_fields = [
-            {"key": "tracking_number", "label": "Waybill / Tracking Number", "type": "text", "required": True, "description": "e.g. TRK-9821-IN"},
-            {"key": "inquiry_type", "label": "Inquiry Type", "type": "select", "options": ["Package Status", "Delivery Delay", "Address Change"], "required": True}
+            {"key": "service_option", "label": "Service Option", "type": "select", "options": ["New Delivery Request", "Package Status Update", "Help with Existing Delivery"], "required": True},
+            {"key": "pickup_location", "label": "Pickup Location", "type": "text", "required": False, "description": "e.g. Indiranagar, Bengaluru"},
+            {"key": "delivery_location", "label": "Delivery Location", "type": "text", "required": False, "description": "e.g. Whitefield, Bengaluru"},
+            {"key": "package_type", "label": "Package Type", "type": "select", "options": ["Documents & Files", "Electronics", "Parcels & Boxes", "Furniture & Heavy", "Fragile Item"], "required": False},
+            {"key": "preferred_time", "label": "Preferred Pickup Time", "type": "datetime", "required": False},
+            {"key": "tracking_number", "label": "Waybill / Tracking Number", "type": "text", "required": False, "description": "e.g. TRK-9821-IN"}
         ]
         logistics_conditions = [
-            {"field": "tracking_number", "operator": "exists", "tool_action": "track_delivery_status", "note": "Calls REST API endpoint to query parcel location"}
+            {"field": "service_option", "operator": "equals", "value": "New Delivery Request", "tool_action": "create_delivery_request", "note": "Creates a new delivery pickup task"},
+            {"field": "tracking_number", "operator": "exists", "tool_action": "track_delivery_status", "note": "Queries live parcel location and status"},
+            {"field": "service_option", "operator": "equals", "value": "Help with Existing Delivery", "tool_action": "create_callback_task", "note": "Creates a dispatch team callback task"}
         ]
         conn.execute(text("""
             INSERT INTO workflows (id, business_id, name, industry, trigger_event, greeting, fields, conditions, actions, closing_message, language, business_hours, is_active, created_at)
             VALUES (:id, :business_id, :name, :industry, :trigger_event, :greeting, :fields, :conditions, :actions, :closing_message, :language, :business_hours, 1, :created_at)
         """), {
-            "id": logistics_wf_id, "business_id": logistics_biz_id, "name": "Parcel Tracking & Delivery Status Callback", "industry": "Logistics & Delivery",
-            "trigger_event": "Missed Call", "greeting": "Hello! Welcome to SwiftMove Express. We missed your call. Please speak or type your tracking number (e.g. TRK-9821-IN) to get real-time delivery updates.",
-            "fields": json.dumps(logistics_fields), "conditions": json.dumps(logistics_conditions), "actions": json.dumps(["track_delivery_status_api", "send_whatsapp_tracking_link"]),
-            "closing_message": "Your parcel status has been retrieved from our live delivery API. Our courier agent will contact you upon dispatch.",
+            "id": logistics_wf_id, "business_id": logistics_biz_id, "name": "Express Delivery Request & Parcel Status Callback", "industry": "Logistics & Delivery",
+            "trigger_event": "Missed Call", "greeting": "Hello! Welcome to SwiftMove Express. We missed your call. Would you like to schedule a new delivery, check a package status update, or get help with an existing delivery?",
+            "fields": json.dumps(logistics_fields), "conditions": json.dumps(logistics_conditions), "actions": json.dumps(["create_delivery_request", "track_delivery_status_api", "create_dispatch_callback_task"]),
+            "closing_message": "Your logistics request has been logged. Our dispatch team will manage your delivery and keep you updated.",
             "language": "en-hi", "business_hours": default_bh, "created_at": now
         })
 
