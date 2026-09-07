@@ -429,9 +429,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Collected Data Fields</h4>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {Object.entries(selectedRecord.collected_data || {}).map(([key, val]) => (
-                  <div key={key} className="bg-slate-900/60 p-2.5 rounded-lg border border-white/5">
+                  <div key={key} className={`bg-slate-900/60 p-2.5 rounded-lg border border-white/5 ${typeof val === 'object' && val !== null ? 'sm:col-span-2' : ''}`}>
                     <div className="text-[10px] font-semibold text-indigo-300 uppercase">{key.replace(/_/g, ' ')}</div>
-                    <div className="text-xs text-slate-100 font-medium mt-0.5">{String(val)}</div>
+                    <div className="text-xs text-slate-100 font-medium mt-0.5 break-words">
+                      {typeof val === 'object' && val !== null ? (
+                        <pre className="text-[10px] font-mono bg-slate-950/80 p-2 rounded-lg border border-white/5 overflow-x-auto whitespace-pre-wrap text-emerald-300">
+                          {JSON.stringify(val, null, 2)}
+                        </pre>
+                      ) : (
+                        <span className="font-mono text-emerald-400">{String(val)}</span>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>

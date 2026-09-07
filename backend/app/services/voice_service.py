@@ -87,28 +87,63 @@ class PipecatVoicePipeline:
         }
 
     @staticmethod
+    def clean_for_speech(text: str) -> str:
+        """
+        Cleans and normalizes conversational text for ultra-natural, human-like voice synthesis.
+        Eliminates markdown syntax, emojis, technical symbols, and converts abbreviations.
+        """
+        if not text:
+            return ""
+        # 1. Remove parenthetical technical / language switch notices
+        t = re.sub(r'^\*\([^*]+\)\*\s*', '', text)
+        t = re.sub(r'\([A-Za-z\s]+switched to[^\)]+\)', '', t)
+        # 2. Remove markdown formatting (bold, italics, headings, code, bullets)
+        t = re.sub(r'\*\*([^*]+)\*\*', r'\1', t)
+        t = re.sub(r'\*([^*]+)\*', r'\1', t)
+        t = re.sub(r'__([^_]+)__', r'\1', t)
+        t = re.sub(r'_([^_]+)_', r'\1', t)
+        t = re.sub(r'#+\s*', '', t)
+        t = re.sub(r'^[ \t]*[-*+]\s+', '', t, flags=re.MULTILINE)
+        t = re.sub(r'`[^`]*`', '', t)
+        # 3. Normalize currency, units, and waybills to natural spoken words
+        t = re.sub(r'\bINR\s*(\d+)', r'\1 rupees', t, flags=re.IGNORECASE)
+        t = re.sub(r'\bRs\.?\s*(\d+)', r'\1 rupees', t, flags=re.IGNORECASE)
+        t = re.sub(r'\b(\d+)\s*kg\b', r'\1 kilograms', t, flags=re.IGNORECASE)
+        t = re.sub(r'TRK-([A-Za-z0-9-]+)', r'tracking number \1', t)
+        # 4. Remove emojis and non-speech symbols
+        emoji_pattern = re.compile('[\U00010000-\U0010ffff]', flags=re.UNICODE)
+        t = emoji_pattern.sub('', t)
+        t = re.sub(r'[✓✔✕✖•●★☆🍰🎂🚚📦📞🤖👤🗓️📅🔄⚠️]', '', t)
+        # 5. Normalize whitespace
+        t = re.sub(r'\s+', ' ', t).strip()
+        return t
+
+    @staticmethod
     def process_tts(text: str, language: str = "en") -> dict:
-        clean_text = re.sub(r'^\*\([^*]+\)\*\s*', '', text).strip()
+        clean_text = PipecatVoicePipeline.clean_for_speech(text)
         if not clean_text:
-            clean_text = text
+            clean_text = text.strip() or "Hello, how may I help you?"
 
         sarvam_key = os.getenv("SARVAM_API_KEY")
         elevenlabs_key = os.getenv("ELEVENLABS_API_KEY")
-        voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Default Rachel voice
+        voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Rachel voice
+        sarvam_speaker = os.getenv("SARVAM_SPEAKER", "kavya")  # kavya provides warm, natural, human-like voice
 
-        # 1. Try Sarvam AI Bulbul v3 TTS if SARVAM_API_KEY is available (Primary Indian Voice AI)
+        # 1. Primary Indian Voice AI: Sarvam AI Bulbul v3 with High-Definition 24kHz audio & natural prosody
         if sarvam_key:
             try:
                 target_code = "hi-IN" if language == "hi" else ("kn-IN" if language == "kn" else "en-IN")
-                print(f"[Pipecat -> Sarvam AI Bulbul v3 TTS] Synthesizing Indian language audio frame ({target_code})...")
+                print(f"[Pipecat -> Sarvam AI Bulbul v3 TTS] Synthesizing natural human voice ({target_code}, speaker: {sarvam_speaker}, 24kHz)...")
                 url = "https://api.sarvam.ai/text-to-speech"
                 headers = {"api-subscription-key": sarvam_key, "Content-Type": "application/json"}
                 payload = {
                     "inputs": [clean_text],
                     "target_language_code": target_code,
-                    "speaker": "priya",
+                    "speaker": sarvam_speaker,
                     "model": "bulbul:v3",
-                    "pace": 1.0
+                    "pace": 0.98,
+                    "speech_sample_rate": 24000,
+                    "enable_preprocessing": True
                 }
                 with httpx.Client(timeout=10.0) as client:
                     resp = client.post(url, headers=headers, json=payload)
@@ -119,24 +154,29 @@ class PipecatVoicePipeline:
                             return {
                                 "audio_base64": audios[0],
                                 "format": "audio/wav",
-                                "provider": f"Sarvam AI Bulbul v3 ({target_code})",
-                                "duration_seconds": max(len(clean_text) * 0.08, 1.5)
+                                "provider": f"Sarvam AI Bulbul v3 Natural ({target_code})",
+                                "duration_seconds": max(len(clean_text) * 0.075, 1.5)
                             }
                     else:
-                        print(f"Sarvam AI TTS API error ({resp.status_code}): {resp.text[:150]}")
+                        print(f"Sarvam AI TTS API notice ({resp.status_code}): {resp.text[:150]}")
             except Exception as e:
                 print(f"Sarvam AI TTS notice ({e}), falling back...")
 
-        # 2. Try ElevenLabs TTS if ELEVENLABS_API_KEY is available
+        # 2. Studio Natural Voice: ElevenLabs Multilingual v2
         if elevenlabs_key:
             try:
-                print(f"[Pipecat -> ElevenLabs TTS] Synthesizing audio frame with ElevenLabs ({voice_id})...")
+                print(f"[Pipecat -> ElevenLabs TTS] Synthesizing expressive human voice with ElevenLabs ({voice_id})...")
                 url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
                 headers = {"xi-api-key": elevenlabs_key, "Content-Type": "application/json"}
                 payload = {
                     "text": clean_text,
                     "model_id": "eleven_multilingual_v2",
-                    "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
+                    "voice_settings": {
+                        "stability": 0.45,
+                        "similarity_boost": 0.85,
+                        "style": 0.20,
+                        "use_speaker_boost": True
+                    }
                 }
                 with httpx.Client(timeout=10.0) as client:
                     resp = client.post(url, headers=headers, json=payload)
@@ -145,17 +185,18 @@ class PipecatVoicePipeline:
                         return {
                             "audio_base64": audio_b64,
                             "format": "audio/mp3",
-                            "provider": "ElevenLabs Multilingual v2",
-                            "duration_seconds": max(len(clean_text) * 0.08, 1.5)
+                            "provider": "ElevenLabs Multilingual v2 (Human Studio)",
+                            "duration_seconds": max(len(clean_text) * 0.075, 1.5)
                         }
             except Exception as e:
                 print(f"ElevenLabs TTS notice ({e}), falling back...")
 
-        # 3. Fallback gTTS synthesis
+        # 3. Natural gTTS synthesis fallback
         try:
-            print(f"[Pipecat -> gTTS] Synthesizing audio ({language})...")
+            print(f"[Pipecat -> gTTS] Synthesizing conversational audio ({language})...")
             lang_code = "kn" if language == "kn" else ("hi" if language == "hi" else "en")
-            tts = gTTS(text=clean_text, lang=lang_code, slow=False)
+            tld = "co.in" if lang_code == "en" else "com"
+            tts = gTTS(text=clean_text, lang=lang_code, tld=tld, slow=False)
             mp3_fp = io.BytesIO()
             tts.write_to_fp(mp3_fp)
             mp3_fp.seek(0)
@@ -163,43 +204,16 @@ class PipecatVoicePipeline:
             return {
                 "audio_base64": audio_b64,
                 "format": "audio/mp3",
-                "provider": "gTTS Engine",
-                "duration_seconds": max(len(clean_text) * 0.08, 1.5)
+                "provider": "gTTS Natural Engine",
+                "duration_seconds": max(len(clean_text) * 0.075, 1.5)
             }
         except Exception as e:
-            # Fallback audio tone generator
-            sample_rate = 8000
-            duration = max(len(clean_text) * 0.08, 1.5)
-            num_samples = int(sample_rate * duration)
-            raw_data = bytearray()
-            freq = 300 if language == "kn" else (320 if language == "hi" else 440)
-            for i in range(num_samples):
-                t = i / sample_rate
-                sample = math.sin(2 * math.pi * freq * t) * 0.2 * math.exp(-t * 0.5)
-                val = int(sample * 32767)
-                raw_data.extend(struct.pack('<h', val))
-
-            header = bytearray()
-            data_size = len(raw_data)
-            header.extend(b'RIFF')
-            header.extend(struct.pack('<I', 36 + data_size))
-            header.extend(b'WAVEfmt ')
-            header.extend(struct.pack('<I', 16))
-            header.extend(struct.pack('<H', 1))
-            header.extend(struct.pack('<H', 1))
-            header.extend(struct.pack('<I', sample_rate))
-            header.extend(struct.pack('<I', sample_rate * 2))
-            header.extend(struct.pack('<H', 2))
-            header.extend(struct.pack('<H', 16))
-            header.extend(b'data')
-            header.extend(struct.pack('<I', data_size))
-
-            full_wav = header + raw_data
+            print(f"gTTS fallback notice: {e}")
             return {
-                "audio_base64": base64.b64encode(full_wav).decode("utf-8"),
-                "format": "audio/wav",
-                "provider": "Acoustic Tone Synthesizer",
-                "duration_seconds": duration
+                "audio_base64": "",
+                "format": "audio/mp3",
+                "provider": "Client Speech Synthesis",
+                "duration_seconds": 1.0
             }
 
 class VoiceService:

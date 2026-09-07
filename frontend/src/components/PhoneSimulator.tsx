@@ -9,6 +9,29 @@ interface PhoneSimulatorProps {
   initialWorkflowId?: string;
 }
 
+// Cleans text of markdown, technical tokens, parentheticals, and emojis for human-sounding speech
+const cleanTextForSpeech = (rawText: string): string => {
+  if (!rawText) return '';
+  return rawText
+    .replace(/^\*\([^*]+\)\*\s*/g, '')
+    .replace(/\([A-Za-z\s]+switched to[^\)]+\)/gi, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    .replace(/#+\s*/g, '')
+    .replace(/^[ \t]*[-*+]\s+/gm, '')
+    .replace(/`[^`]*`/g, '')
+    .replace(/\bINR\s*(\d+)/gi, '$1 rupees')
+    .replace(/\bRs\.?\s*(\d+)/gi, '$1 rupees')
+    .replace(/\b(\d+)\s*kg\b/gi, '$1 kilograms')
+    .replace(/TRK-([A-Za-z0-9-]+)/gi, 'tracking number $1')
+    .replace(/[\u{1F300}-\u{1F9FF}]/gu, '')
+    .replace(/[✓✔✕✖•●★☆🍰🎂🚚📦📞🤖👤🗓️📅🔄⚠️]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
 export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
   businesses,
   workflows,
@@ -32,24 +55,32 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isRecording, setIsRecording] = useState(false);
+  const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [liveTranscript, setLiveTranscript] = useState<string>('');
+  const [voiceActivityState, setVoiceActivityState] = useState<'idle' | 'listening' | 'speaking' | 'processing'>('idle');
   const [lastExecutedTools, setLastExecutedTools] = useState<any[]>([]);
+  const [currentRecordId, setCurrentRecordId] = useState<string | null>(null);
+  const [collectedData, setCollectedData] = useState<Record<string, any>>({});
   const [activeUrgency, setActiveUrgency] = useState<string>('Normal');
   const [activeLanguage, setActiveLanguage] = useState<string>('en');
   const [languageSwitchNotice, setLanguageSwitchNotice] = useState<string | null>(null);
   const [micStatusNotice, setMicStatusNotice] = useState<string | null>(null);
 
-  // Audio Playback & Mic Recording Refs
-  const [isPlayingAudio, setIsPlayingAudio] = useState(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const chatEndRef = useRef<HTMLDivElement | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recognitionRef = useRef<any>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-
-  // Keep refs synced for event handlers
+  // Audio Playback & Mic Recording Refs (Guards against state closure race conditions)
   const callStateRef = useRef(callState);
   const isHandsFreeRef = useRef(isHandsFree);
+  const isPlayingAudioRef = useRef(false);
+  const isProcessingRef = useRef(false);
+  const isMicMutedByUserRef = useRef(false);
+
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const recognitionRef = useRef<any>(null);
+  const restartTimerRef = useRef<any>(null);
+  const silenceTimerRef = useRef<any>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   useEffect(() => {
     callStateRef.current = callState;
@@ -57,7 +88,10 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
 
   useEffect(() => {
     isHandsFreeRef.current = isHandsFree;
-  }, [isHandsFree]);
+    if (callState === 'active' && isHandsFree && !isPlayingAudioRef.current && !isProcessingRef.current && !isRecording) {
+      startContinuousListening();
+    }
+  }, [isHandsFree, callState]);
 
   useEffect(() => {
     if (initialWorkflowId) {
@@ -67,91 +101,373 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, liveTranscript, isProcessing]);
 
-  // Start Call Simulation
+  // Clean up on unmount
+  useEffect(() => {
+    return () => {
+      stopMicOnly();
+      if (audioRef.current) {
+        try { audioRef.current.pause(); } catch (e) {}
+      }
+      if ('speechSynthesis' in window) {
+        try { window.speechSynthesis.cancel(); } catch (e) {}
+      }
+    };
+  }, []);
+
+  // Natural Browser Speech Synthesis Fallback (guarantees voice output if server audio is blocked/offline)
+  const speakBrowserFallback = (text: string, lang: string, onDone: () => void) => {
+    if (!('speechSynthesis' in window)) {
+      onDone();
+      return;
+    }
+    try {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(cleanTextForSpeech(text));
+      const voices = window.speechSynthesis.getVoices();
+      
+      const langPrefix = lang === 'hi' ? 'hi' : (lang === 'kn' ? 'kn' : 'en');
+      const naturalVoice = voices.find(v => 
+        v.lang.toLowerCase().startsWith(langPrefix) && 
+        (v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('Neural') || v.name.includes('Online'))
+      ) || voices.find(v => v.lang.toLowerCase().startsWith(langPrefix)) || voices[0];
+
+      if (naturalVoice) utterance.voice = naturalVoice;
+      utterance.rate = 0.96; // Conversational human pace
+      utterance.pitch = 1.0;
+      utterance.lang = lang === 'hi' ? 'hi-IN' : (lang === 'kn' ? 'kn-IN' : 'en-IN');
+
+      utterance.onend = () => { onDone(); };
+      utterance.onerror = () => { onDone(); };
+
+      window.speechSynthesis.speak(utterance);
+    } catch (e) {
+      onDone();
+    }
+  };
+
+  // Safely stop only the microphone recognition without ending call session
+  const stopMicOnly = () => {
+    clearTimeout(restartTimerRef.current);
+    clearTimeout(silenceTimerRef.current);
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.onend = null;
+        recognitionRef.current.onerror = null;
+        recognitionRef.current.onresult = null;
+        recognitionRef.current.abort();
+      } catch (e) {}
+      recognitionRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try { mediaRecorderRef.current.stop(); } catch (e) {}
+    }
+    setIsRecording(false);
+    setLiveTranscript('');
+  };
+
+  // Continuous Hands-Free Listening Loop
+  const startContinuousListening = () => {
+    // Only listen if call is active and bot is not speaking/thinking
+    if (callStateRef.current !== 'active' || isPlayingAudioRef.current || isProcessingRef.current || isMicMutedByUserRef.current) {
+      return;
+    }
+
+    stopMicOnly();
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      // Fallback to HTML5 MediaRecorder
+      startMediaRecorderFallback();
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognitionRef.current = recognition;
+      recognition.continuous = false; // Fast boundary detection with auto-restart loop delivers infinite continuous listening
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
+
+      // Accurate language code mapping
+      const targetLang = activeLanguage === 'kn' ? 'kn-IN' : (activeLanguage === 'hi' ? 'hi-IN' : 'en-IN');
+      recognition.lang = targetLang;
+
+      recognition.onstart = () => {
+        setIsRecording(true);
+        setVoiceActivityState('listening');
+        setMicStatusNotice(null);
+      };
+
+      let finalCaptured = false;
+
+      recognition.onresult = (event: any) => {
+        let interim = '';
+        let finalStr = '';
+
+        for (let i = 0; i < event.results.length; ++i) {
+          const item = event.results[i];
+          if (item.isFinal) {
+            finalStr += item[0].transcript;
+          } else {
+            interim += item[0].transcript;
+          }
+        }
+
+        if (interim.trim()) {
+          setLiveTranscript(interim.trim());
+          // If speaker pauses after interim speech, automatically trigger after 1.5s silence
+          clearTimeout(silenceTimerRef.current);
+          silenceTimerRef.current = setTimeout(() => {
+            if (interim.trim() && callStateRef.current === 'active' && !isProcessingRef.current && !finalCaptured) {
+              finalCaptured = true;
+              stopMicOnly();
+              handleSendMessage(interim.trim());
+            }
+          }, 1500);
+        }
+
+        if (finalStr.trim()) {
+          finalCaptured = true;
+          clearTimeout(silenceTimerRef.current);
+          setLiveTranscript('');
+          stopMicOnly();
+          handleSendMessage(finalStr.trim());
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        const err = event?.error;
+        // 'no-speech' or 'aborted' is expected when caller is thinking/pausing
+        if (err === 'no-speech' || err === 'aborted') {
+          return;
+        }
+        if (err === 'not-allowed' || err === 'audio-capture') {
+          setMicStatusNotice('Microphone access blocked. Please allow mic in browser settings.');
+        }
+      };
+
+      recognition.onend = () => {
+        setIsRecording(false);
+        recognitionRef.current = null;
+
+        // CONTINUOUS TURN-TAKING AUTO-RESTART:
+        // Automatically restart listening if call is active and assistant is not speaking/processing
+        if (
+          callStateRef.current === 'active' &&
+          isHandsFreeRef.current &&
+          !isMicMutedByUserRef.current &&
+          !isPlayingAudioRef.current &&
+          !isProcessingRef.current &&
+          !finalCaptured
+        ) {
+          clearTimeout(restartTimerRef.current);
+          restartTimerRef.current = setTimeout(() => {
+            if (
+              callStateRef.current === 'active' &&
+              !isPlayingAudioRef.current &&
+              !isProcessingRef.current &&
+              !isMicMutedByUserRef.current
+            ) {
+              startContinuousListening();
+            }
+          }, 150);
+        }
+      };
+
+      recognition.start();
+    } catch (err) {
+      console.warn('SpeechRecognition error, scheduling retry:', err);
+      if (callStateRef.current === 'active' && isHandsFreeRef.current && !isPlayingAudioRef.current) {
+        clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = setTimeout(startContinuousListening, 600);
+      }
+    }
+  };
+
+  // MediaRecorder Fallback if Web Speech Recognition is absent
+  const startMediaRecorderFallback = () => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setMicStatusNotice('Microphone not supported in this browser. Please use text input.');
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(track => track.stop());
+        const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorder.mimeType || 'audio/webm' });
+        if (audioBlob.size > 0 && callStateRef.current === 'active') {
+          try {
+            isProcessingRef.current = true;
+            setIsProcessing(true);
+            const formData = new FormData();
+            formData.append('audio', audioBlob, 'recording.webm');
+            const sttRes = await fetch('/api/ai/stt', { method: 'POST', body: formData });
+            const sttJson = await sttRes.json();
+            if (sttJson.success && sttJson.data?.text) {
+              handleSendMessage(sttJson.data.text);
+            } else if (callStateRef.current === 'active' && isHandsFreeRef.current) {
+              startContinuousListening();
+            }
+          } catch (err) {
+            if (callStateRef.current === 'active' && isHandsFreeRef.current) {
+              startContinuousListening();
+            }
+          } finally {
+            isProcessingRef.current = false;
+            setIsProcessing(false);
+          }
+        }
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+      setVoiceActivityState('listening');
+
+      // 4-second chunking for fallback
+      setTimeout(() => {
+        if (mediaRecorder.state === 'recording') {
+          mediaRecorder.stop();
+        }
+      }, 4000);
+    }).catch(() => {
+      setMicStatusNotice('Microphone permission required for voice calls.');
+    });
+  };
+
+  // Start Call Simulation (Auto-starts continuous turn-taking)
   const startCall = () => {
     setCallState('ringing');
+    setCurrentRecordId(null);
+    setCollectedData({});
     setMessages([]);
     setLastExecutedTools([]);
     setActiveUrgency('Normal');
     setActiveLanguage('en');
     setLanguageSwitchNotice(null);
+    setMicStatusNotice(null);
+    setLiveTranscript('');
+    isMicMutedByUserRef.current = false;
 
     setTimeout(() => {
       setCallState('active');
+      callStateRef.current = 'active';
+      isHandsFreeRef.current = true;
+      setIsHandsFree(true);
+
       const initialGreeting: ChatMessage = {
         role: 'assistant',
         content: activeWorkflow?.greeting || 'Hello! Thank you for calling. We missed your call.'
       };
       setMessages([initialGreeting]);
-      speakText(initialGreeting.content, 'en', true);
-    }, 1500);
+      // Speak greeting, then automatically activate continuous microphone
+      speakText(initialGreeting.content, 'en');
+    }, 1200);
   };
 
   const endCall = () => {
     setCallState('ended');
-    setIsRecording(false);
-    setIsPlayingAudio(false);
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      try { mediaRecorderRef.current.stop(); } catch (e) {}
+    callStateRef.current = 'ended';
+    setVoiceActivityState('idle');
+    stopMicOnly();
+    if (audioRef.current) {
+      try { audioRef.current.pause(); } catch (e) {}
     }
+    if ('speechSynthesis' in window) {
+      try { window.speechSynthesis.cancel(); } catch (e) {}
+    }
+    setIsPlayingAudio(false);
+    setIsRecording(false);
+    setIsProcessing(false);
+    setLiveTranscript('');
   };
 
-  // Speak AI text using server TTS audio synthesis (Supports English, Hindi, Kannada)
-  const speakText = async (text: string, languageOverride?: string, autoListenNext: boolean = false) => {
+  // Speak AI text with ultra-natural human voice and automatically resume continuous listening
+  const speakText = async (text: string, languageOverride?: string) => {
+    // 1. Mute microphone during speech to prevent audio echo loop
+    stopMicOnly();
+
+    isPlayingAudioRef.current = true;
+    setIsPlayingAudio(true);
+    setVoiceActivityState('speaking');
+
+    const cleanSpeech = cleanTextForSpeech(text);
+    const targetLang = languageOverride || (selectedLanguage === 'auto' ? activeLanguage : selectedLanguage);
+    const lang = targetLang === 'kn' ? 'kn' : (targetLang === 'hi' ? 'hi' : 'en');
+
+    const onSpeechFinished = () => {
+      isPlayingAudioRef.current = false;
+      setIsPlayingAudio(false);
+
+      // AUTOMATICALLY RESUME LISTENING: User never has to click mic again!
+      if (callStateRef.current === 'active' && isHandsFreeRef.current && !isMicMutedByUserRef.current) {
+        setVoiceActivityState('listening');
+        clearTimeout(restartTimerRef.current);
+        // Buffer 350ms to allow room echo to decay before mic opens
+        restartTimerRef.current = setTimeout(() => {
+          if (callStateRef.current === 'active' && !isPlayingAudioRef.current && !isProcessingRef.current) {
+            startContinuousListening();
+          }
+        }, 350);
+      } else {
+        setVoiceActivityState('idle');
+      }
+    };
+
     try {
-      setIsPlayingAudio(true);
-      const targetLang = languageOverride || (selectedLanguage === 'auto' ? activeLanguage : selectedLanguage);
-      const lang = targetLang === 'kn' ? 'kn' : (targetLang === 'hi' ? 'hi' : 'en');
-      const ttsData = await generateTTS(text, lang);
+      const ttsData = await generateTTS(cleanSpeech, lang);
 
       if (ttsData?.audio_base64) {
         const audioSrc = `data:${ttsData.format || 'audio/wav'};base64,${ttsData.audio_base64}`;
         if (!audioRef.current) {
           audioRef.current = new Audio(audioSrc);
         } else {
+          audioRef.current.pause();
           audioRef.current.src = audioSrc;
         }
 
         audioRef.current.onended = () => {
-          setIsPlayingAudio(false);
-          // If Hands-Free Live Phone Mode is enabled, automatically start listening to caller mic!
-          if (autoListenNext || (isHandsFreeRef.current && callStateRef.current === 'active')) {
-            setTimeout(() => {
-              if (callStateRef.current === 'active') {
-                startRecordingMic();
-              }
-            }, 600);
-          }
+          onSpeechFinished();
+        };
+
+        audioRef.current.onerror = () => {
+          console.warn('Audio element error, utilizing natural browser speech fallback');
+          speakBrowserFallback(cleanSpeech, lang, onSpeechFinished);
         };
 
         await audioRef.current.play();
       } else {
-        setIsPlayingAudio(false);
-        if (autoListenNext || (isHandsFreeRef.current && callStateRef.current === 'active')) {
-          setTimeout(() => startRecordingMic(), 600);
-        }
+        speakBrowserFallback(cleanSpeech, lang, onSpeechFinished);
       }
     } catch (err) {
-      console.warn('TTS playback notice:', err);
-      setIsPlayingAudio(false);
-      if (autoListenNext || (isHandsFreeRef.current && callStateRef.current === 'active')) {
-        setTimeout(() => startRecordingMic(), 600);
-      }
+      console.warn('Server TTS error, using natural client voice synthesis:', err);
+      speakBrowserFallback(cleanSpeech, lang, onSpeechFinished);
     }
   };
 
-  // Submit turn message
+  // Submit turn message and orchestrate next AI turn
   const handleSendMessage = async (customText?: string) => {
     const textToSend = customText || inputMessage;
-    if (!textToSend.trim() || isProcessing || !activeWorkflow) return;
+    if (!textToSend.trim() || isProcessingRef.current || !activeWorkflow) return;
 
+    stopMicOnly();
+    isProcessingRef.current = true;
+    setIsProcessing(true);
+    setVoiceActivityState('processing');
     setInputMessage('');
+    setLiveTranscript('');
+
     const userMsg: ChatMessage = { role: 'user', content: textToSend };
     const updatedMessages = [...messages, userMsg];
     setMessages(updatedMessages);
-    setIsProcessing(true);
     setLanguageSwitchNotice(null);
 
     try {
@@ -161,8 +477,16 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
         caller_name: callerName,
         caller_phone: callerPhone,
         language: selectedLanguage,
-        messages: updatedMessages
+        messages: updatedMessages,
+        record_id: currentRecordId || undefined
       });
+
+      if (response.record_id) {
+        setCurrentRecordId(response.record_id);
+      }
+      if (response.collected_data) {
+        setCollectedData(response.collected_data);
+      }
 
       const assistantMsg: ChatMessage = { role: 'assistant', content: response.assistant_reply };
       setMessages([...updatedMessages, assistantMsg]);
@@ -170,7 +494,7 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
       if (response.urgency) setActiveUrgency(response.urgency);
       if (response.language) setActiveLanguage(response.language);
 
-      // Check for Natural Language Switch Notice
+      // Natural language switch banner
       if (response.language_switched) {
         const switchLog = (response.executed_tools || []).find((t: any) => t.tool === 'language_switch_detected');
         if (switchLog && switchLog.args) {
@@ -180,138 +504,38 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
         }
       }
 
-      speakText(response.assistant_reply, response.language, isHandsFree);
-    } catch (err: any) {
-      alert(`AI Call Error: ${err.message}`);
-    } finally {
+      isProcessingRef.current = false;
       setIsProcessing(false);
-    }
-  };
 
-  // Dual-Engine Microphone Recording (Web Speech API + MediaRecorder Backup)
-  const startRecordingMic = () => {
-    if (isRecording || isProcessing || callStateRef.current !== 'active') return;
-
-    // Stop any existing active recognition instance first
-    if (recognitionRef.current) {
-      try { recognitionRef.current.stop(); } catch (e) {}
-      recognitionRef.current = null;
-    }
-
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      try {
-        const recognition = new SpeechRecognition();
-        recognitionRef.current = recognition;
-        recognition.continuous = false;
-        recognition.interimResults = false;
-
-        // Accurate language code mapping for Speech-to-Text
-        const targetLang = activeLanguage === 'kn' ? 'kn-IN' : (activeLanguage === 'hi' ? 'hi-IN' : 'en-IN');
-        recognition.lang = targetLang;
-
-        recognition.onstart = () => {
-          setIsRecording(true);
-          setMicStatusNotice(null);
-        };
-
-        recognition.onresult = (event: any) => {
-          const transcript = event.results[0][0]?.transcript;
-          setIsRecording(false);
-          if (transcript && transcript.trim()) {
-            handleSendMessage(transcript.trim());
-          }
-        };
-
-        recognition.onerror = (event: any) => {
-          setIsRecording(false);
-          const errorType = event?.error;
-          console.log('[Web Speech API] Recognition event:', errorType);
-
-          if (errorType === 'no-speech') {
-            setMicStatusNotice('No speech detected. Click the microphone or type to speak.');
-          } else if (errorType === 'audio-capture' || errorType === 'not-allowed') {
-            setMicStatusNotice('Microphone access blocked. Please check browser microphone permissions.');
-          } else if (errorType !== 'aborted') {
-            setMicStatusNotice(`Speech recognition paused (${errorType || 'idle'}). Click microphone to retry.`);
-          }
-        };
-
-        recognition.onend = () => {
-          setIsRecording(false);
-          recognitionRef.current = null;
-        };
-
-        recognition.start();
-        return;
-      } catch (err) {
-        console.warn('Web Speech API notice:', err);
+      // Speak AI response with human-like voice; continuous listening automatically resumes when done
+      await speakText(response.assistant_reply, response.language);
+    } catch (err: any) {
+      isProcessingRef.current = false;
+      setIsProcessing(false);
+      setVoiceActivityState('idle');
+      alert(`AI Call Error: ${err.message}`);
+      // Resume listening so call does not freeze on network glitch
+      if (callStateRef.current === 'active' && isHandsFreeRef.current) {
+        startContinuousListening();
       }
     }
-
-    // Backup HTML5 MediaRecorder
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-        const mediaRecorder = new MediaRecorder(stream);
-        mediaRecorderRef.current = mediaRecorder;
-        audioChunksRef.current = [];
-
-        mediaRecorder.ondataavailable = (event) => {
-          if (event.data.size > 0) audioChunksRef.current.push(event.data);
-        };
-
-        mediaRecorder.onstop = async () => {
-          stream.getTracks().forEach(track => track.stop());
-          const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorder.mimeType || 'audio/webm' });
-          if (audioBlob.size > 0) {
-            try {
-              setIsProcessing(true);
-              const formData = new FormData();
-              formData.append('audio', audioBlob, 'recording.webm');
-              const sttRes = await fetch('/api/ai/stt', { method: 'POST', body: formData });
-              const sttJson = await sttRes.json();
-              if (sttJson.success && sttJson.data?.text) {
-                handleSendMessage(sttJson.data.text);
-              } else {
-                setMicStatusNotice('Speech not recognized. Click microphone to speak again.');
-              }
-            } catch (err) {
-              setMicStatusNotice('Microphone recording error. Click microphone to retry.');
-            } finally {
-              setIsProcessing(false);
-            }
-          }
-        };
-
-        mediaRecorder.start();
-        setIsRecording(true);
-        setTimeout(() => {
-          if (mediaRecorder.state === 'recording') {
-            mediaRecorder.stop();
-            setIsRecording(false);
-          }
-        }, 4000);
-      }).catch(() => {
-        setMicStatusNotice('Microphone permission required for live voice input.');
-      });
-    } else {
-      setMicStatusNotice('Microphone is not supported in this browser environment.');
-    }
   };
 
+  // Manual Mic Toggle (Mute/Unmute without dropping the call)
   const toggleRecording = () => {
-    if (isRecording) {
-      if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch (e) {}
-        recognitionRef.current = null;
-      }
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stop();
-      }
-      setIsRecording(false);
+    if (callState !== 'active') {
+      startCall();
       return;
     }
-    startRecordingMic();
+    if (isRecording) {
+      isMicMutedByUserRef.current = true;
+      stopMicOnly();
+      setMicStatusNotice('Microphone paused. Click again to resume continuous voice listening.');
+    } else {
+      isMicMutedByUserRef.current = false;
+      setMicStatusNotice(null);
+      startContinuousListening();
+    }
   };
 
   const getLanguageBadge = (lang: string) => {
@@ -403,6 +627,110 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Live Database Fields Tracking Card */}
+          <div className="glass-panel p-5 space-y-3 border border-indigo-500/30 shadow-lg">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-bold text-slate-200 uppercase flex items-center gap-1.5">
+                <i className="fa-solid fa-database text-indigo-400" /> Database Fields (Live)
+              </h3>
+              {currentRecordId && (
+                <span className="text-[10px] font-mono text-indigo-300 bg-indigo-950/80 px-2 py-0.5 rounded border border-indigo-500/40">
+                  {currentRecordId}
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Questions asked dynamically per workflow schema. Data is saved in SQLite <code className="text-indigo-300">records.collected_data</code>.
+            </p>
+
+            {/* Dynamic Field Progress & List */}
+            {(() => {
+              const allFields = activeWorkflow?.fields || [];
+              const reqFields = allFields.filter(f => f.required);
+              const filledReqCount = reqFields.filter(f => !!collectedData[f.key]).length;
+              const percent = reqFields.length > 0 ? Math.round((filledReqCount / reqFields.length) * 100) : 100;
+              const isAllDone = percent === 100 && reqFields.length > 0;
+
+              return (
+                <div className="space-y-3 pt-1">
+                  <div>
+                    <div className="flex justify-between text-[11px] mb-1 font-semibold">
+                      <span className="text-slate-300">Required Fields Captured</span>
+                      <span className={isAllDone ? "text-emerald-400 font-bold" : "text-amber-400"}>
+                        {filledReqCount} / {reqFields.length} ({percent}%)
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-white/10">
+                      <div
+                        className={`h-full transition-all duration-500 ${isAllDone ? 'bg-gradient-to-r from-emerald-500 to-teal-400' : 'bg-gradient-to-r from-indigo-500 to-amber-500'}`}
+                        style={{ width: `${percent}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {isAllDone && (
+                    <div className="bg-emerald-950/40 border border-emerald-500/40 px-3 py-2 rounded-xl text-xs text-emerald-300 flex items-center gap-2">
+                      <i className="fa-solid fa-circle-check text-emerald-400 text-sm flex-shrink-0" />
+                      <div>
+                        <div className="font-bold">All Database Fields Captured!</div>
+                        <div className="text-[10px] text-emerald-400/80">Workflow completion tools executed & saved to SQLite database.</div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Individual Fields List */}
+                  <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
+                    {allFields.map((field) => {
+                      const val = collectedData[field.key];
+                      const isFilled = val !== undefined && val !== null && val !== '';
+
+                      return (
+                        <div
+                          key={field.key}
+                          className={`p-2.5 rounded-xl border text-xs transition-all ${
+                            isFilled
+                              ? 'bg-slate-900/90 border-emerald-500/50 shadow-sm'
+                              : field.required
+                              ? 'bg-slate-900/50 border-amber-500/30'
+                              : 'bg-slate-900/30 border-white/5'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="font-semibold text-slate-200 text-[11px] flex items-center gap-1">
+                              {field.label}
+                              {field.required && <span className="text-amber-400 font-bold" title="Required">*</span>}
+                            </span>
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium flex-shrink-0 ${
+                              isFilled
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                : field.required
+                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse'
+                                : 'bg-slate-800 text-slate-400'
+                            }`}>
+                              {isFilled ? '✓ Stored' : field.required ? 'Pending Question' : 'Optional'}
+                            </span>
+                          </div>
+
+                          <div className="mt-1 text-[11px]">
+                            {isFilled ? (
+                              <span className="font-mono text-emerald-400 font-semibold truncate block">
+                                {typeof val === 'object' ? JSON.stringify(val) : String(val)}
+                              </span>
+                            ) : (
+                              <span className="text-slate-500 italic text-[10px]">
+                                {field.required ? 'AI will ask caller for this field...' : 'Optional field'}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
         </div>
 
         {/* Center & Right Column: Interactive Phone Device Frame */}
@@ -471,6 +799,19 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
               </div>
             )}
 
+            {/* Continuous Voice Session Active Notification */}
+            {callState === 'active' && isHandsFree && (
+              <div className="bg-emerald-950/40 border border-emerald-500/30 px-3.5 py-2 rounded-xl mb-4 flex items-center justify-between text-xs text-emerald-200">
+                <span className="flex items-center gap-2 font-semibold">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                  🎙️ Continuous Voice Testing Active: Mic stays ON after each AI reply. Speak turn-by-turn hands-free!
+                </span>
+                <span className="text-[10px] text-emerald-400 font-bold bg-emerald-900/50 px-2 py-0.5 rounded-lg border border-emerald-500/20">
+                  Turn-by-Turn
+                </span>
+              </div>
+            )}
+
             {/* Microphone Status / Guidance Notice */}
             {micStatusNotice && (
               <div className="bg-slate-900/90 p-2.5 rounded-xl border border-amber-500/30 mb-4 flex items-center justify-between text-xs text-amber-200 animate-fade-in">
@@ -482,30 +823,50 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
               </div>
             )}
 
-            {/* Audio Waveform Equalizer Indicator */}
-            {(isPlayingAudio || isRecording) && (
+            {/* Audio Waveform Equalizer & Live Voice Status */}
+            {(isPlayingAudio || isRecording || isProcessing || liveTranscript) && (
               <div className="bg-gradient-to-r from-slate-900 via-indigo-950/80 to-slate-900 p-3.5 rounded-2xl border border-indigo-500/40 mb-4 flex items-center justify-between shadow-xl">
                 <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-indigo-500/20 border border-indigo-400/40 flex items-center justify-center animate-pulse">
-                    <i className="fa-solid fa-volume-high text-indigo-400 text-sm" />
+                  <div className={`w-8 h-8 rounded-full border flex items-center justify-center animate-pulse ${
+                    isPlayingAudio
+                      ? 'bg-indigo-500/20 border-indigo-400/40 text-indigo-400'
+                      : isRecording
+                      ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-400'
+                      : 'bg-amber-500/20 border-amber-400/40 text-amber-400'
+                  }`}>
+                    <i className={`fa-solid text-sm ${
+                      isPlayingAudio ? 'fa-volume-high' : isRecording ? 'fa-microphone' : 'fa-spinner animate-spin'
+                    }`} />
                   </div>
                   <div>
                     <span className="text-xs font-bold text-white block">
-                      {isPlayingAudio ? `AI Voice Assistant Speaking (${langInfo.label})` : `Listening to Caller Speech (${langInfo.label})`}
+                      {isPlayingAudio
+                        ? `AI Assistant Speaking (Human Voice • ${langInfo.label})`
+                        : liveTranscript
+                        ? `Hearing: "${liveTranscript}..."`
+                        : isRecording
+                        ? `🎙️ Listening... Continuous Session Active (Speak your reply)`
+                        : `AI Assistant thinking & checking tools...`}
                     </span>
-                    <span className="text-[10px] text-indigo-300">Live Audio Stream • Real-time Processing</span>
+                    <span className="text-[10px] text-indigo-300">
+                      {isPlayingAudio
+                        ? 'Natural speech streaming • Mic temporarily paused to prevent echo'
+                        : isRecording
+                        ? 'Hands-free continuous mode • Mic remains active turn-by-turn'
+                        : 'Evaluating conversation state & executing tools'}
+                    </span>
                   </div>
                 </div>
-                {/* 8-Bar Equalizer */}
+                {/* 8-Bar Dynamic Equalizer */}
                 <div className="flex items-center gap-1.5 h-8 px-2 bg-slate-950/60 rounded-xl border border-indigo-500/20">
-                  <div className="w-1.5 bg-indigo-500 eq-bar" />
-                  <div className="w-1.5 bg-blue-400 eq-bar" />
-                  <div className="w-1.5 bg-indigo-400 eq-bar" />
-                  <div className="w-1.5 bg-purple-500 eq-bar" />
-                  <div className="w-1.5 bg-indigo-500 eq-bar" />
-                  <div className="w-1.5 bg-blue-500 eq-bar" />
-                  <div className="w-1.5 bg-cyan-400 eq-bar" />
-                  <div className="w-1.5 bg-indigo-400 eq-bar" />
+                  <div className={`w-1.5 eq-bar ${isPlayingAudio ? 'bg-indigo-500' : isRecording ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                  <div className={`w-1.5 eq-bar ${isPlayingAudio ? 'bg-blue-400' : isRecording ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                  <div className={`w-1.5 eq-bar ${isPlayingAudio ? 'bg-indigo-400' : isRecording ? 'bg-cyan-400' : 'bg-amber-400'}`} />
+                  <div className={`w-1.5 eq-bar ${isPlayingAudio ? 'bg-purple-500' : isRecording ? 'bg-emerald-400' : 'bg-amber-300'}`} />
+                  <div className={`w-1.5 eq-bar ${isPlayingAudio ? 'bg-indigo-500' : isRecording ? 'bg-teal-400' : 'bg-amber-500'}`} />
+                  <div className={`w-1.5 eq-bar ${isPlayingAudio ? 'bg-blue-500' : isRecording ? 'bg-emerald-500' : 'bg-amber-400'}`} />
+                  <div className={`w-1.5 eq-bar ${isPlayingAudio ? 'bg-cyan-400' : isRecording ? 'bg-cyan-400' : 'bg-amber-300'}`} />
+                  <div className={`w-1.5 eq-bar ${isPlayingAudio ? 'bg-indigo-400' : isRecording ? 'bg-emerald-400' : 'bg-amber-400'}`} />
                 </div>
               </div>
             )}
@@ -560,6 +921,14 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                   </div>
                 ))
               )}
+              {/* Live Speech Interim Bubble */}
+              {liveTranscript && isRecording && (
+                <div className="bg-emerald-950/60 border border-emerald-500/30 text-emerald-200 p-3 rounded-2xl ml-auto rounded-br-none text-xs flex items-center gap-2 max-w-[85%] animate-pulse">
+                  <i className="fa-solid fa-microphone text-emerald-400 text-xs" />
+                  <span className="font-semibold text-emerald-300">Hearing:</span>
+                  <span>"{liveTranscript}..."</span>
+                </div>
+              )}
               {isProcessing && (
                 <div className="bg-slate-800 border border-white/10 text-slate-400 p-3 rounded-2xl mr-auto rounded-bl-none text-xs flex items-center gap-2">
                   <i className="fa-solid fa-spinner animate-spin text-indigo-400 text-sm" />
@@ -575,14 +944,14 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                 <button
                   type="button"
                   onClick={toggleRecording}
-                  className={`p-3 rounded-xl border transition-all ${
+                  className={`p-3 rounded-xl border transition-all cursor-pointer ${
                     isRecording
-                      ? 'bg-rose-600 text-white border-rose-500 animate-pulse'
-                      : 'bg-slate-900 text-indigo-400 border-white/10 hover:border-indigo-500/40'
+                      ? 'bg-emerald-600 text-white border-emerald-500 shadow-lg shadow-emerald-500/25 animate-pulse'
+                      : 'bg-slate-900 text-slate-400 border-white/10 hover:border-emerald-500/40 hover:text-emerald-400'
                   }`}
-                  title={isRecording ? 'Stop Recording' : 'Speak Voice Microphone'}
+                  title={isRecording ? 'Microphone Active (Continuous Hands-Free) • Click to Pause/Mute' : 'Microphone Paused • Click to Resume Continuous Listening'}
                 >
-                  <i className={`fa-solid ${isRecording ? 'fa-microphone-slash' : 'fa-microphone'} text-lg`} />
+                  <i className={`fa-solid ${isRecording ? 'fa-microphone' : 'fa-microphone-slash'} text-lg`} />
                 </button>
 
                 <input
@@ -598,7 +967,7 @@ export const PhoneSimulator: React.FC<PhoneSimulatorProps> = ({
                   type="button"
                   onClick={() => handleSendMessage()}
                   disabled={!inputMessage.trim() || isProcessing}
-                  className="p-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold transition-all disabled:opacity-50"
+                  className="p-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold transition-all disabled:opacity-50 cursor-pointer"
                 >
                   <i className="fa-solid fa-paper-plane text-lg" />
                 </button>

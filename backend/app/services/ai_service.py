@@ -51,6 +51,128 @@ class AiService:
         return 'en'
 
     @staticmethod
+    def extract_workflow_fields(fields: list, messages: list, collected_data: dict, groq_api_key: str = None) -> dict:
+        user_texts = [m["content"] for m in messages if m.get("role") == "user"]
+        if not user_texts:
+            return {}
+
+        latest_user = user_texts[-1]
+        full_user = " ".join(user_texts[-4:])
+        full_user_lower = full_user.lower()
+
+        extracted = {}
+
+        # 1. Groq LLM extraction (JSON Mode)
+        if groq_api_key:
+            try:
+                extraction_prompt = (
+                    f"You are a structured entity extraction engine for a customer service voice AI.\n"
+                    f"Target Workflow Database Fields to extract:\n{json.dumps(fields, indent=2)}\n\n"
+                    f"Already Extracted Fields:\n{json.dumps(collected_data, indent=2)}\n\n"
+                    f"Caller Just Said: '{latest_user}' (Recent Context: '{full_user}')\n\n"
+                    f"TASK:\n"
+                    f"- Extract any values matching the target database fields that the caller mentioned.\n"
+                    f"- If the caller speaks Hindi/Hinglish or Kannada/Kanglish, accurately map to the field values.\n"
+                    f"- For select fields (e.g. order_type, delivery_preference, inquiry_type), map to the closest allowed option.\n"
+                    f"- Do not hallucinate or make up values that the user has not mentioned.\n"
+                    f"- Return ONLY a JSON object containing the newly detected key-value pairs (empty {{}} if none)."
+                )
+                with httpx.Client(timeout=6.0) as client:
+                    resp = client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
+                            "messages": [{"role": "system", "content": extraction_prompt}],
+                            "response_format": {"type": "json_object"},
+                            "temperature": 0.1
+                        }
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()["choices"][0]["message"]["content"]
+                        parsed = json.loads(data)
+                        if isinstance(parsed, dict):
+                            for k, v in parsed.items():
+                                if v not in [None, "", "null", "None"] and any(f["key"] == k for f in fields):
+                                    extracted[k] = v
+            except Exception as e:
+                print(f"[Entity Extraction Notice] Groq extraction skipped: {e}")
+
+        # 2. Rule & Regex Heuristic Fill (ensures zero failure even if Groq is slow or misses a field)
+        field_keys = [f["key"] for f in fields]
+
+        # Weight extraction (e.g. 1.5 kg, 2 kilo, 500g)
+        if "weight_kg" in field_keys and "weight_kg" not in extracted and "weight_kg" not in collected_data:
+            w_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:kg|kilo|kilos|pound|lb)', full_user_lower)
+            if w_match:
+                extracted["weight_kg"] = w_match.group(1)
+
+        # Cake flavor extraction
+        if "cake_flavor" in field_keys and "cake_flavor" not in extracted and "cake_flavor" not in collected_data:
+            flav_match = re.search(r'(dark chocolate|chocolate|red velvet|vanilla|mango|black forest|pineapple|butterscotch|strawberry|choco chip|fruit|truffle|blueberry|butter scotch)', full_user_lower)
+            if flav_match:
+                extracted["cake_flavor"] = flav_match.group(1).title()
+
+        # Order type
+        if "order_type" in field_keys and "order_type" not in extracted and "order_type" not in collected_data:
+            if any(w in full_user_lower for w in ["custom", "design", "photo cake", "theme"]):
+                extracted["order_type"] = "Custom Design"
+            elif any(w in full_user_lower for w in ["order", "cake", "buy", "place", "want", "need", "birthday", "anniversary", "pastry"]):
+                extracted["order_type"] = "New Cake Order"
+            elif any(w in full_user_lower for w in ["enquiry", "inquiry", "rate", "price", "menu", "cost"]):
+                extracted["order_type"] = "General Enquiry"
+
+        # Delivery preference
+        if "delivery_preference" in field_keys and "delivery_preference" not in extracted and "delivery_preference" not in collected_data:
+            if any(w in full_user_lower for w in ["delivery", "deliver", "home", "address", "send to", "drop"]):
+                extracted["delivery_preference"] = "Home Delivery"
+            elif any(w in full_user_lower for w in ["pickup", "pick up", "store", "takeaway", "collect", "baker"]):
+                extracted["delivery_preference"] = "Store Pickup"
+
+        # Tracking number
+        if "tracking_number" in field_keys and "tracking_number" not in extracted and "tracking_number" not in collected_data:
+            match_trk = re.search(r'TRK-[A-Z0-9-]+', full_user, re.IGNORECASE)
+            if match_trk:
+                extracted["tracking_number"] = match_trk.group(0).upper()
+
+        # Logistics inquiry type
+        if "inquiry_type" in field_keys and "inquiry_type" not in extracted and "inquiry_type" not in collected_data:
+            if any(w in full_user_lower for w in ["delay", "late", "delayed", "not reached", "stuck"]):
+                extracted["inquiry_type"] = "Delivery Delay"
+            elif any(w in full_user_lower for w in ["address", "location", "change address", "redirect"]):
+                extracted["inquiry_type"] = "Address Change"
+            elif any(w in full_user_lower for w in ["status", "where is", "track", "tracking", "parcel", "package"]):
+                extracted["inquiry_type"] = "Package Status"
+
+        # Required Date & Time
+        if "required_date" in field_keys and "required_date" not in extracted and "required_date" not in collected_data:
+            has_date = any(w in full_user_lower for w in ["today", "tomorrow", "day after", "naale", "kal", "parso", "sanje", "evening", "morning", "pm", "am"])
+            if has_date:
+                d_str = "tomorrow" if ("tomorrow" in full_user_lower or "naale" in full_user_lower or "kal" in full_user_lower) else ("day after tomorrow" if ("day after" in full_user_lower or "parso" in full_user_lower) else "today")
+                t_str = "18:00"
+                for tm in re.finditer(r'(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)', full_user_lower, re.I):
+                    after_str = full_user_lower[tm.end():tm.end()+6]
+                    if not re.match(r'^\s*(?:kg|kilo|pound|lb)', after_str):
+                        t_str = tm.group(1)
+                        break
+                target_dt = CalendarService.parse_datetime_input(d_str, t_str)
+                extracted["required_date"] = target_dt.isoformat()
+
+        # Custom message
+        if "custom_message" in field_keys and "custom_message" not in extracted and "custom_message" not in collected_data:
+            msg_match = re.search(r'(?:write|message|text|says|name on cake)\s*[\'"]?([^\'"]+?)[\'"]?(?=\s+on|\s+for|\s+$)', full_user_lower)
+            if msg_match:
+                extracted["custom_message"] = msg_match.group(1).strip()
+
+        # Budget
+        if "budget_inr" in field_keys and "budget_inr" not in extracted and "budget_inr" not in collected_data:
+            b_match = re.search(r'(?:rs|rupees|inr|budget|₹)\s*(\d+)', full_user_lower) or re.search(r'(\d+)\s*(?:rs|rupees|inr)', full_user_lower)
+            if b_match:
+                extracted["budget_inr"] = b_match.group(1)
+
+        return extracted
+
+    @staticmethod
     def process_conversation(request_data: dict):
         business_id = request_data.get("business_id")
         workflow_id = request_data.get("workflow_id")
@@ -157,296 +279,60 @@ class AiService:
                     "result": f"Notice: Call received OUTSIDE business hours ({curr_display}). After-hours service response triggered."
                 })
 
+        rec_id = request_data.get("record_id") or f"rec-{str(uuid.uuid4())[:8]}"
         collected_data_dict = {}
 
-        industry = (workflow.get("industry") or business.get("industry") or "").lower()
-        is_cake_shop = ("cake" in industry or "bakery" in industry or workflow.get("id") == "wf-cake-01")
-        is_logistics = ("logistics" in industry or "delivery" in industry or workflow.get("id") == "wf-logistics-01")
+        # 1. Load any previously collected fields for this call record
+        if request_data.get("record_id"):
+            try:
+                with get_db_connection() as conn:
+                    existing_rec = conn.execute(
+                        text("SELECT collected_data FROM records WHERE id = :id"),
+                        {"id": request_data["record_id"]}
+                    ).fetchone()
+                    if existing_rec and existing_rec[0]:
+                        loaded = json.loads(existing_rec[0]) if isinstance(existing_rec[0], str) else existing_rec[0]
+                        if isinstance(loaded, dict):
+                            collected_data_dict = loaded
+            except Exception as e:
+                print(f"[Record Load Notice] {e}")
 
+        # 2. Extract newly mentioned fields from caller messages matching database fields
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        extracted_new = AiService.extract_workflow_fields(fields, messages, collected_data_dict, groq_api_key)
+        for k, v in extracted_new.items():
+            collected_data_dict[k] = v
+
+        if extracted_new:
+            executed_tools.append({
+                "tool": "extract_database_fields",
+                "args": {"extracted_count": len(extracted_new), "fields": list(extracted_new.keys())},
+                "result": f"Extracted database fields from caller: {json.dumps(extracted_new)}"
+            })
+
+        # 3. Determine missing required fields defined in workflow
+        required_fields = [f for f in fields if f.get("required")]
+        missing_required = [f for f in required_fields if f["key"] not in collected_data_dict or collected_data_dict[f["key"]] in [None, ""]]
+        is_complete = (len(missing_required) == 0)
+
+        if missing_required:
+            executed_tools.append({
+                "tool": "check_database_required_fields",
+                "args": {
+                    "collected_fields": list(collected_data_dict.keys()),
+                    "missing_required_fields": [f["label"] for f in missing_required]
+                },
+                "result": f"Awaiting {len(missing_required)} required field(s): {', '.join(f['label'] for f in missing_required)}"
+            })
+
+        # 4. Evaluate conditional rules & urgency
+        urgency = "Normal"
         full_user_text = " ".join([m["content"] for m in messages if m.get("role") == "user"])
         full_user_lower = full_user_text.lower()
-
-        # -------------------------------------------------------------
-        # USE CASE A: CAKE SHOP WORKFLOW
-        # -------------------------------------------------------------
-        if is_cake_shop:
-            date_match = "tomorrow" if ("tomorrow" in user_lower or "naale" in user_lower or "kal" in user_lower) else ("day after tomorrow" if ("day after" in user_lower or "parso" in user_lower) else "today")
-            time_match = "18:00"
-            for m in re.finditer(r'(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)', user_lower, re.IGNORECASE):
-                after_str = user_lower[m.end():m.end()+6]
-                if not re.match(r'^\s*(?:kg|kilo|pound|lb)', after_str):
-                    time_match = m.group(1)
-                    break
-            target_dt = CalendarService.parse_datetime_input(date_match, time_match)
-            start_iso = target_dt.isoformat()
-
-            flavor = "Belgian Dark Chocolate"
-            flav_match = re.search(r'(dark chocolate|chocolate|red velvet|vanilla|mango|black forest|pineapple|butterscotch|strawberry|choco chip)', full_user_lower)
-            if flav_match:
-                flavor = flav_match.group(1).title()
-
-            weight = "1.5"
-            w_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:kg|kilo|pound|lb)', full_user_lower)
-            if w_match:
-                weight = w_match.group(1)
-
-            order_type = "New Cake Order" if any(w in full_user_lower for w in ["order", "cake", "buy", "place", "want", "need", "birthday", "anniversary", "pastry"]) else "General Enquiry"
-
-            cake_type = "Theme Custom Cake"
-            if "birthday" in full_user_lower:
-                cake_type = "Birthday Cake"
-            elif "anniversary" in full_user_lower:
-                cake_type = "Anniversary Cake"
-            elif any(w in full_user_lower for w in ["wedding", "tier", "marriage"]):
-                cake_type = "Tier Wedding Cake"
-            elif any(w in full_user_lower for w in ["pastry", "cupcake", "box"]):
-                cake_type = "Pastry Box"
-
-            custom_msg = None
-            msg_match = re.search(r'(?:write|message|text|says)\s*[\'"]?([^\'"]+?)[\'"]?(?=\s+on|\s+for|\s+$)', full_user_lower)
-            if msg_match:
-                custom_msg = msg_match.group(1).strip()
-
-            delivery_pref = "Home Delivery" if any(w in full_user_lower for w in ["delivery", "deliver", "home", "address", "hsr", "indiranagar", "whitefield"]) else "Store Pickup"
-
-            budget = "2000"
-            b_match = re.search(r'(?:rs|rupees|inr|budget|₹)\s*(\d+)', full_user_lower) or re.search(r'(\d+)\s*(?:rs|rupees|inr)', full_user_lower)
-            if b_match:
-                budget = b_match.group(1)
-
-            enq_id = f"ENQ-{str(uuid.uuid4())[:6].upper()}"
-            enquiry_tool_res = {
-                "success": True,
-                "enquiry_id": enq_id,
-                "order_type": order_type,
-                "cake_type": cake_type,
-                "flavor": flavor,
-                "weight_kg": weight,
-                "required_date": start_iso,
-                "custom_message": custom_msg,
-                "delivery_preference": delivery_pref,
-                "budget_inr": budget
-            }
-            executed_tools.append({
-                "tool": "create_order_enquiry",
-                "args": {"enquiry_id": enq_id, "cake_type": cake_type, "flavor": flavor, "weight": f"{weight}kg"},
-                "result": enquiry_tool_res
-            })
-            collected_data_dict["order_enquiry"] = enquiry_tool_res
-            collected_data_dict["order_type"] = order_type
-            collected_data_dict["cake_type"] = cake_type
-            collected_data_dict["cake_flavor"] = flavor
-            collected_data_dict["weight_kg"] = weight
-            collected_data_dict["required_date"] = start_iso
-            collected_data_dict["custom_message"] = custom_msg or "None"
-            collected_data_dict["delivery_preference"] = delivery_pref
-            collected_data_dict["budget_inr"] = budget
-
-            owner_summary = ExternalApiService.send_owner_summary_alert(
-                business_name=business['name'],
-                owner_name=business.get('owner_name', 'Ananya Sharma'),
-                caller_name=caller_name,
-                caller_phone=caller_phone,
-                order_type=order_type,
-                cake_type=cake_type,
-                flavor=flavor,
-                weight=weight,
-                required_date=start_iso,
-                custom_message=custom_msg,
-                delivery_pref=delivery_pref,
-                budget_inr=budget
-            )
-            executed_tools.append({
-                "tool": "send_owner_summary_alert",
-                "args": {"recipient": business.get('owner_name', 'Ananya Sharma'), "alert_id": owner_summary.get("alert_id")},
-                "result": owner_summary
-            })
-            collected_data_dict["owner_structured_summary"] = owner_summary.get("formatted_summary")
-
-        # -------------------------------------------------------------
-        # USE CASE B: LOGISTICS & DELIVERY BUSINESS WORKFLOW
-        # -------------------------------------------------------------
-        elif is_logistics:
-            match_trk = re.search(r'TRK-[A-Z0-9-]+', full_user_text, re.IGNORECASE)
-            tracking_no = match_trk.group(0).upper() if match_trk else "TRK-9821-IN"
-
-            is_status_req = any(k in full_user_lower for k in ["trk-", "track", "status", "where is", "location", "parcel status", "tracking", "waybill"])
-            is_help_req = any(k in full_user_lower for k in ["help", "support", "issue", "callback", "delayed", "complaint", "agent", "problem", "damaged", "lost"])
-
-            if is_help_req:
-                cb_res = ExternalApiService.create_callback_task(
-                    issue_summary=f"Customer requested agent callback/support (Tracking #{tracking_no})",
-                    tracking_number=tracking_no,
-                    caller_name=caller_name,
-                    caller_phone=caller_phone
-                )
-                executed_tools.append({
-                    "tool": "create_callback_task",
-                    "args": {"issue": "Delivery Support Callback", "tracking_number": tracking_no},
-                    "result": cb_res
-                })
-                collected_data_dict["service_option"] = "Help with Existing Delivery"
-                collected_data_dict["tracking_number"] = tracking_no
-                collected_data_dict["callback_task"] = cb_res
-
-            elif is_status_req:
-                tracking_res = ExternalApiService.track_delivery_status(tracking_no)
-                executed_tools.append({
-                    "tool": "track_delivery_status",
-                    "args": {"tracking_number": tracking_no},
-                    "result": tracking_res
-                })
-                collected_data_dict["service_option"] = "Package Status Update"
-                collected_data_dict["tracking_number"] = tracking_no
-                collected_data_dict["delivery_status"] = tracking_res.get("status")
-                collected_data_dict["current_location"] = tracking_res.get("current_location")
-
-            else:
-                # New Delivery Request
-                pickup = "Indiranagar, Bengaluru"
-                delivery = "Whitefield, Bengaluru"
-
-                loc_match = re.search(r'from\s+([a-zA-Z0-9\s,]+?)\s+to\s+([a-zA-Z0-9\s,]+?)(?=\s+for|\s+tomorrow|\s+today|\s+at|\s+on|\s+$)', user_lower, re.IGNORECASE)
-                if loc_match:
-                    pickup = loc_match.group(1).strip().title()
-                    delivery = loc_match.group(2).strip().title()
-                else:
-                    p_match = re.search(r'from\s+([a-zA-Z0-9\s,]+?)(?=\s+at|\s+for|\s+$)', user_lower, re.IGNORECASE)
-                    if p_match:
-                        pickup = p_match.group(1).strip().title()
-                    d_match = re.search(r'\bto\s+([a-zA-Z0-9\s,]+?)(?=\s+for|\s+tomorrow|\s+today|\s+at|\s+on|\s+$)', user_lower, re.IGNORECASE)
-                    if d_match and d_match.group(1).lower() not in ["schedule", "book", "deliver", "send", "check"]:
-                        delivery = d_match.group(1).strip().title()
-
-                pkg_type = "Parcels & Boxes"
-                if any(w in full_user_lower for w in ["document", "file", "paper"]):
-                    pkg_type = "Documents & Files"
-                elif any(w in full_user_lower for w in ["electronic", "laptop", "phone"]):
-                    pkg_type = "Electronics"
-                elif any(w in full_user_lower for w in ["fragile", "glass"]):
-                    pkg_type = "Fragile Item"
-
-                pref_time = "Tomorrow 4:00 PM"
-                if "today" in full_user_lower:
-                    pref_time = "Today 5:00 PM"
-
-                del_res = ExternalApiService.create_delivery_request(
-                    pickup_location=pickup,
-                    delivery_location=delivery,
-                    package_type=pkg_type,
-                    preferred_time=pref_time,
-                    caller_name=caller_name,
-                    caller_phone=caller_phone
-                )
-                executed_tools.append({
-                    "tool": "create_delivery_request",
-                    "args": {"pickup": pickup, "delivery": delivery, "package_type": pkg_type, "preferred_time": pref_time},
-                    "result": del_res
-                })
-                collected_data_dict["service_option"] = "New Delivery Request"
-                collected_data_dict["new_delivery_request"] = del_res
-                collected_data_dict["pickup_location"] = pickup
-                collected_data_dict["delivery_location"] = delivery
-                collected_data_dict["package_type"] = pkg_type
-                collected_data_dict["preferred_time"] = pref_time
-
-            if any(k in full_user_lower for k in ["crm", "customer profile", "history"]):
-                crm_res = ExternalApiService.lookup_crm_customer(caller_phone)
-                executed_tools.append({
-                    "tool": "lookup_crm_customer",
-                    "args": {"phone_number": caller_phone},
-                    "result": crm_res
-                })
-                collected_data_dict["crm_profile"] = crm_res
-
-        # -------------------------------------------------------------
-        # USE CASE C: CLINIC / GENERAL CALENDAR APPOINTMENT WORKFLOW
-        # -------------------------------------------------------------
-        else:
-            calendar_keywords = [
-                "schedule", "book", "appointment", "site visit", "tomorrow", "4 pm", "10 am",
-                "reschedule", "cancel", "change", "time", "pm", "am", "p.m.", "a.m.", "slot",
-                "move", "shift", "update", "set", "beku", "naale", "kal", "chahiye"
-            ]
-            if any(k in user_lower for k in calendar_keywords):
-                if "cancel" in user_lower and ("event" in user_lower or "appointment" in user_lower):
-                    res = CalendarService.cancel_event("latest", business_id=business_id)
-                    executed_tools.append({"tool": "cancel_calendar_event", "args": {"event_id": "latest"}, "result": res})
-                    if res.get("success"):
-                        collected_data_dict["appointment_status"] = "Cancelled"
-                elif any(w in user_lower for w in ["reschedule", "change", "move", "shift", "update", "set"]):
-                    time_match = "16:00"
-                    for m in re.finditer(r'(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)', user_lower, re.IGNORECASE):
-                        time_match = m.group(1)
-                        break
-                    date_match = "day after tomorrow" if ("day after" in user_lower or "parso" in user_lower) else ("tomorrow" if ("tomorrow" in user_lower or "kal" in user_lower or "naale" in user_lower) else "today")
-                    target_dt = CalendarService.parse_datetime_input(date_match, time_match)
-                    new_start = target_dt.isoformat()
-                    new_end = (target_dt + timedelta(minutes=30)).isoformat()
-                    res = CalendarService.update_event("latest", new_start_time=new_start, new_end_time=new_end, business_id=business_id)
-                    executed_tools.append({"tool": "update_calendar_event", "args": {"event_id": "latest", "start_time": new_start}, "result": res})
-                    if res.get("success"):
-                        collected_data_dict["appointment"] = {
-                            "event_id": res.get("event_id"),
-                            "title": res.get("title"),
-                            "start_time": new_start,
-                            "status": "Rescheduled"
-                        }
-                else:
-                    date_match = "tomorrow" if ("tomorrow" in user_lower or "naale" in user_lower or "kal" in user_lower) else ("day after tomorrow" if ("day after" in user_lower or "parso" in user_lower) else "today")
-                    time_match = "16:00"
-                    for m in re.finditer(r'(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)', user_lower, re.IGNORECASE):
-                        time_match = m.group(1)
-                        break
-
-                    check_res = CalendarService.check_availability(date_match, time_match, 30, business_id=business_id)
-                    executed_tools.append({
-                        "tool": "check_calendar_availability",
-                        "args": {"date": date_match, "time": time_match, "business": business["name"]},
-                        "result": check_res
-                    })
-
-                    start_iso = check_res.get("start_time", datetime.now().isoformat())
-                    end_iso = check_res.get("end_time", datetime.now().isoformat())
-
-                    if not check_res.get("available") and check_res.get("recommended_slots"):
-                        rec_slot_str = check_res["recommended_slots"][0]
-                        alt_dt = CalendarService.parse_datetime_input(date_match, rec_slot_str)
-                        start_iso = alt_dt.isoformat()
-                        end_iso = (alt_dt + timedelta(minutes=30)).isoformat()
-
-                    evt_title = f"{workflow['industry']} Appointment - {caller_name}"
-                    evt_desc = f"Scheduled via Voice AI Assistant ({workflow['name']})"
-
-                    create_res = CalendarService.create_event(
-                        business_id=business_id,
-                        title=evt_title,
-                        start_time=start_iso,
-                        end_time=end_iso,
-                        attendee_name=caller_name,
-                        attendee_phone=caller_phone,
-                        description=evt_desc
-                    )
-                    executed_tools.append({
-                        "tool": "create_calendar_event",
-                        "args": {"title": evt_title, "start_time": start_iso},
-                        "result": create_res
-                    })
-                    if create_res.get("success"):
-                        collected_data_dict["appointment"] = {
-                            "event_id": create_res.get("event_id"),
-                            "google_event_id": create_res.get("google_event_id"),
-                            "title": create_res.get("title"),
-                            "start_time": start_iso,
-                            "end_time": end_iso,
-                            "status": "Confirmed"
-                        }
-
-        # 3. Evaluate conditional rules & urgency
-        urgency = "Normal"
         for cond in conditions:
             if cond.get("field") in ["required_date", "preferred_time"] and cond.get("operator") in ["within_hours", "exists"]:
-                if any(k in full_user_lower for k in ["tomorrow", "today", "24 hour", "urgent", "naale", "kal", "jaldi"]):
+                req_d = str(collected_data_dict.get("required_date") or "").lower()
+                if any(k in req_d or k in full_user_lower for k in ["tomorrow", "today", "24 hour", "urgent", "naale", "kal", "jaldi"]):
                     urgency = "Urgent"
                     executed_tools.append({
                         "tool": "evaluate_conditional_rule",
@@ -461,10 +347,130 @@ class AiService:
                     "result": "Rule Triggered: Flagged as CRITICAL"
                 })
 
-        # 4. Groq API Integration (If GROQ_API_KEY is configured in .env)
-        groq_api_key = os.getenv("GROQ_API_KEY")
-        reply = None
+        industry = (workflow.get("industry") or business.get("industry") or "").lower()
+        is_cake_shop = ("cake" in industry or "bakery" in industry or workflow.get("id") == "wf-cake-01")
+        is_logistics = ("logistics" in industry or "delivery" in industry or workflow.get("id") == "wf-logistics-01")
 
+        # 5. Domain Completion Actions (Triggered ONLY when all required fields have been collected!)
+        if is_complete:
+            if is_cake_shop:
+                flavor = collected_data_dict.get("cake_flavor", "Belgian Dark Chocolate")
+                weight = str(collected_data_dict.get("weight_kg", "1"))
+                order_type = collected_data_dict.get("order_type", "New Cake Order")
+                req_date = collected_data_dict.get("required_date") or datetime.now().isoformat()
+                delivery_pref = collected_data_dict.get("delivery_preference", "Home Delivery")
+                custom_msg = collected_data_dict.get("custom_message")
+                budget = str(collected_data_dict.get("budget_inr", "2000"))
+                cake_type = "Theme Custom Cake"
+                if "birthday" in full_user_lower:
+                    cake_type = "Birthday Cake"
+                elif "anniversary" in full_user_lower:
+                    cake_type = "Anniversary Cake"
+
+                enq_id = f"ENQ-{str(uuid.uuid4())[:6].upper()}"
+                enquiry_tool_res = {
+                    "success": True,
+                    "enquiry_id": enq_id,
+                    "order_type": order_type,
+                    "cake_type": cake_type,
+                    "flavor": flavor,
+                    "weight_kg": weight,
+                    "required_date": req_date,
+                    "custom_message": custom_msg or "None",
+                    "delivery_preference": delivery_pref,
+                    "budget_inr": budget
+                }
+                executed_tools.append({
+                    "tool": "create_order_enquiry",
+                    "args": {"enquiry_id": enq_id, "cake_type": cake_type, "flavor": flavor, "weight": f"{weight}kg"},
+                    "result": enquiry_tool_res
+                })
+                collected_data_dict["order_enquiry"] = enquiry_tool_res
+
+                owner_summary = ExternalApiService.send_owner_summary_alert(
+                    business_name=business['name'],
+                    owner_name=business.get('owner_name', 'Ananya Sharma'),
+                    caller_name=caller_name,
+                    caller_phone=caller_phone,
+                    order_type=order_type,
+                    cake_type=cake_type,
+                    flavor=flavor,
+                    weight=weight,
+                    required_date=req_date,
+                    custom_message=custom_msg,
+                    delivery_pref=delivery_pref,
+                    budget_inr=budget
+                )
+                executed_tools.append({
+                    "tool": "send_owner_summary_alert",
+                    "args": {"recipient": business.get('owner_name', 'Ananya Sharma'), "alert_id": owner_summary.get("alert_id")},
+                    "result": owner_summary
+                })
+                collected_data_dict["owner_structured_summary"] = owner_summary.get("formatted_summary")
+
+            elif is_logistics:
+                trk_no = collected_data_dict.get("tracking_number") or "TRK-9821-IN"
+                inq_type = collected_data_dict.get("inquiry_type", "Package Status")
+
+                if any(k in full_user_lower for k in ["help", "support", "issue", "callback", "delayed", "complaint", "agent"]):
+                    cb_res = ExternalApiService.create_callback_task(
+                        issue_summary=f"Customer requested agent callback/support (Tracking #{trk_no})",
+                        tracking_number=trk_no,
+                        caller_name=caller_name,
+                        caller_phone=caller_phone
+                    )
+                    executed_tools.append({
+                        "tool": "create_callback_task",
+                        "args": {"issue": "Delivery Support Callback", "tracking_number": trk_no},
+                        "result": cb_res
+                    })
+                    collected_data_dict["service_option"] = "Help with Existing Delivery"
+                    collected_data_dict["callback_task"] = cb_res
+                else:
+                    tracking_res = ExternalApiService.track_delivery_status(trk_no)
+                    executed_tools.append({
+                        "tool": "track_delivery_status",
+                        "args": {"tracking_number": trk_no},
+                        "result": tracking_res
+                    })
+                    collected_data_dict["service_option"] = "Package Status Update"
+                    collected_data_dict["delivery_status"] = tracking_res.get("status")
+                    collected_data_dict["current_location"] = tracking_res.get("current_location")
+
+            else:
+                # Calendar Appointment Workflow
+                date_match = "tomorrow" if ("tomorrow" in user_lower or "naale" in user_lower or "kal" in user_lower) else ("day after tomorrow" if ("day after" in user_lower or "parso" in user_lower) else "today")
+                time_match = "16:00"
+                for m in re.finditer(r'(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)', user_lower, re.IGNORECASE):
+                    time_match = m.group(1)
+                    break
+                target_dt = CalendarService.parse_datetime_input(date_match, time_match)
+                start_iso = target_dt.isoformat()
+                end_iso = (target_dt + timedelta(minutes=30)).isoformat()
+                evt_title = f"{workflow['industry']} Appointment - {caller_name}"
+                create_res = CalendarService.create_event(
+                    business_id=business_id,
+                    title=evt_title,
+                    start_time=start_iso,
+                    end_time=end_iso,
+                    attendee_name=caller_name,
+                    attendee_phone=caller_phone,
+                    description=f"Scheduled via Voice AI ({workflow['name']})"
+                )
+                executed_tools.append({
+                    "tool": "create_calendar_event",
+                    "args": {"title": evt_title, "start_time": start_iso},
+                    "result": create_res
+                })
+                collected_data_dict["appointment"] = {
+                    "event_id": create_res.get("event_id"),
+                    "title": evt_title,
+                    "start_time": start_iso,
+                    "status": "Confirmed"
+                }
+
+        # 6. Response Generation (Progressive Question Asking vs Completion Confirmation)
+        reply = None
         switch_prefix = ""
         if language_switched:
             lang_names = {"en": "English", "hi": "Hindi (हिन्दी)", "kn": "Kannada (ಕನ್ನಡ)"}
@@ -472,21 +478,44 @@ class AiService:
 
         if groq_api_key:
             try:
-                print(f"[Groq LLM Engine] Processing request with Llama 3.3 on Groq LPUs...")
                 tools_summary = json.dumps(executed_tools) if executed_tools else "None"
                 after_hours_note = f"CLOSED (After-Hours). Call received outside business hours ({b_hours.get('after_hours_greeting', '')}). Process caller request accurately while politely reminding them of operating hours." if (is_after_hours and b_hours) else "OPEN"
-                
-                sys_prompt = (
-                    f"You are a professional Voice AI Assistant for business '{business['name']}' ({workflow['industry']}). "
-                    f"Workflow: '{workflow['name']}'. Default Greeting: '{workflow['greeting']}'. Closing Message: '{workflow['closing_message']}'. "
-                    f"Operating Hours Status: {after_hours_note}. "
-                    f"Caller Name: '{caller_name}', Phone: '{caller_phone}'. "
-                    f"Executed Tools Data: {tools_summary}. Urgency Level: {urgency}. "
-                    f"IMPORTANT INSTRUCTION: DO NOT mention scheduling a calendar or doctor appointment unless the business is a Clinic/Hospital. "
-                    f"For Cake Shop, confirm the cake order enquiry and owner alert. For Logistics, confirm delivery request or package status or callback task. "
-                    f"MUST respond in target language code '{detected_lang.upper()}' (en=English, hi=Hindi/Hinglish, kn=Kannada/Kanglish). "
-                    f"Keep responses natural, helpful, polite, and concise (under 3 sentences) for speech playback."
-                )
+                model_name = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+
+                if not is_complete:
+                    # PROGRESSIVE QUESTION PROMPT: Ask for missing required fields (1-2 at a time)
+                    next_needed = [f["label"] for f in missing_required[:2]]
+                    sys_prompt = (
+                        f"You are a warm, polite, and helpful human telephone representative for '{business['name']}' ({workflow['industry']}). "
+                        f"Workflow: '{workflow['name']}'. Default Greeting: '{workflow['greeting']}'. "
+                        f"Operating Hours Status: {after_hours_note}. "
+                        f"Caller Name: '{caller_name}', Phone: '{caller_phone}'. "
+                        f"Fields already collected: {json.dumps(collected_data_dict)}. "
+                        f"Missing REQUIRED fields to collect: {[f['label'] for f in missing_required]}. "
+                        f"CRITICAL SPOKEN INSTRUCTIONS: "
+                        f"- Acknowledge warmly what the caller just said. "
+                        f"- Ask conversationally for the next 1 or 2 missing fields ({next_needed}). Do NOT ask for more than 2 at once. "
+                        f"- Speak like a real, caring person on a live telephone call, NEVER sound robotic. "
+                        f"- Keep response to 1 or 2 short, natural spoken sentences. "
+                        f"- NO markdown symbols, bullet points, asterisks, or robotic phrases. "
+                        f"- MUST respond in target language code '{detected_lang.upper()}' (en=English, hi=Hindi/Hinglish, kn=Kannada/Kanglish)."
+                    )
+                else:
+                    # COMPLETION CONFIRMATION PROMPT: Confirm collected details and deliver closing message
+                    sys_prompt = (
+                        f"You are a warm, friendly human phone representative for '{business['name']}' ({workflow['industry']}). "
+                        f"Workflow: '{workflow['name']}'. Closing Message: '{workflow['closing_message']}'. "
+                        f"Operating Hours Status: {after_hours_note}. "
+                        f"Caller Name: '{caller_name}', Phone: '{caller_phone}'. "
+                        f"All required fields successfully collected: {json.dumps(collected_data_dict)}. "
+                        f"Executed Tools Data: {tools_summary}. Urgency Level: {urgency}. "
+                        f"CRITICAL SPOKEN INSTRUCTIONS: "
+                        f"- Warmly confirm the customer's request has been successfully registered with their exact choices. "
+                        f"- Naturally deliver or incorporate the closing message: '{workflow['closing_message']}'. "
+                        f"- Speak naturally in 1 to 2 spoken sentences. NO bullet points, NO markdown, NO asterisks. "
+                        f"- MUST respond in target language code '{detected_lang.upper()}' (en=English, hi=Hindi/Hinglish, kn=Kannada/Kanglish)."
+                    )
+
                 groq_messages = [{"role": "system", "content": sys_prompt}]
                 for m in messages[-4:]:
                     groq_messages.append({"role": m.get("role", "user"), "content": m.get("content", "")})
@@ -496,7 +525,7 @@ class AiService:
                         "https://api.groq.com/openai/v1/chat/completions",
                         headers={"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"},
                         json={
-                            "model": "llama-3.3-70b-versatile",
+                            "model": model_name,
                             "messages": groq_messages,
                             "temperature": 0.3,
                             "max_tokens": 250
@@ -508,134 +537,125 @@ class AiService:
                         reply = f"{switch_prefix}{raw_reply}"
                         executed_tools.append({
                             "tool": "groq_llm_inference",
-                            "args": {"model": "llama-3.3-70b-versatile", "latency": "ultra-fast LPU"},
-                            "result": f"Generated dynamic response via Groq Cloud API in {detected_lang.upper()}"
+                            "args": {"model": model_name, "mode": "slot_question" if not is_complete else "order_completion"},
+                            "result": f"Generated dynamic response in {detected_lang.upper()}"
                         })
             except Exception as e:
-                print(f"Groq API call notice ({e}), continuing with local rule engine...")
+                print(f"[Groq LLM Notice] {e}, continuing with local rule engine...")
 
-        # Fallback response generation if Groq API key is not set or failed
+        # 7. Fallback Response Generator (Multilingual, Progressive Question Asking & Confirmation)
         if not reply:
-            switch_prefix = ""
-            if language_switched:
-                lang_names = {"en": "English", "hi": "Hindi (हिन्दी)", "kn": "Kannada (ಕನ್ನಡ)"}
-                switch_prefix = f"*(Language switched to {lang_names.get(detected_lang, 'English')})* "
-
-            # Check executed tool results in proper use case priority order
-            enquiry_tool = next((t for t in executed_tools if t["tool"] == "create_order_enquiry"), None)
-            delivery_tool = next((t for t in executed_tools if t["tool"] == "create_delivery_request"), None)
-            tracking_tool = next((t for t in executed_tools if t["tool"] == "track_delivery_status"), None)
-            callback_tool = next((t for t in executed_tools if t["tool"] == "create_callback_task"), None)
-            create_tool = next((t for t in executed_tools if t["tool"] == "create_calendar_event"), None)
-            check_tool = next((t for t in executed_tools if t["tool"] == "check_calendar_availability"), None)
-            cancel_tool = next((t for t in executed_tools if t["tool"] == "cancel_calendar_event"), None)
-            update_tool = next((t for t in executed_tools if t["tool"] == "update_calendar_event"), None)
-
-            if enquiry_tool and enquiry_tool.get("result", {}).get("success"):
-                e_res = enquiry_tool["result"]
-                owner_n = business.get('owner_name', 'Ananya Sharma')
-                if detected_lang == 'kn':
-                    reply = f"{switch_prefix}Namaskara! Nimma cake order enquiry ({e_res.get('enquiry_id')}) submit agide ({e_res.get('weight_kg')}kg {e_res.get('flavor')} {e_res.get('cake_type')}, {e_res.get('delivery_preference')}). Shop owner {owner_n} ge structured summary bhejalaagide. {workflow['closing_message']}"
-                elif detected_lang == 'hi':
-                    reply = f"{switch_prefix}Namaste! Aapka cake order enquiry ({e_res.get('enquiry_id')}) register ho gaya hai ({e_res.get('weight_kg')}kg {e_res.get('flavor')} {e_res.get('cake_type')}, {e_res.get('delivery_preference')})! Shop owner {owner_n} ko structured summary bhej di gayi hai. {workflow['closing_message']}"
+            if not is_complete:
+                # Progressive Question Asking Fallback
+                next_keys = [f["key"] for f in missing_required[:2]]
+                if "order_type" in next_keys and len(messages) <= 2:
+                    if detected_lang == 'kn':
+                        reply = f"{switch_prefix}Namaskara! {business['name']} ge swagatha. Naavu nimma call miss madidve. Yavudhu cake order athava enquiry beku?"
+                    elif detected_lang == 'hi':
+                        reply = f"{switch_prefix}Namaste! {business['name']} mein aapka swagat hai. Humne aapka missed call dekha. Aapko kis type ka cake order ya enquiry karni hai?"
+                    else:
+                        reply = f"{switch_prefix}Hello {caller_name}! Thank you for calling {business['name']}. We missed your call. What kind of cake order or enquiry can I help you with today?"
+                elif "cake_flavor" in next_keys or "weight_kg" in next_keys:
+                    if detected_lang == 'kn':
+                        reply = f"{switch_prefix}Kanditha! Nimge yavudhu flavor cake beku, mathu eshtu kg banisabeku?"
+                    elif detected_lang == 'hi':
+                        reply = f"{switch_prefix}Zaroor! Aapko cake ka kaun sa flavor pasand hai, aur kitne kilo ka banwana chahenge?"
+                    else:
+                        reply = f"{switch_prefix}I would love to help you with that! What cake flavor are you thinking of, and what weight or size would you like?"
+                elif "required_date" in next_keys or "delivery_preference" in next_keys:
+                    flv = collected_data_dict.get('cake_flavor', 'cake')
+                    if detected_lang == 'kn':
+                        reply = f"{switch_prefix}Thumba chennagide! Nimge ee {flv} yavaththu mathu yav samayakke beku, mathu home delivery beka athava store pickup a?"
+                    elif detected_lang == 'hi':
+                        reply = f"{switch_prefix}Badiya! Yeh {flv} aapko kis din aur samay par chahiye, aur kya aap home delivery chahenge ya store pickup?"
+                    else:
+                        reply = f"{switch_prefix}{flv.title()} sounds wonderful! For which date and time do you need it, and would you prefer home delivery or store pickup?"
+                elif "tracking_number" in next_keys:
+                    if detected_lang == 'kn':
+                        reply = f"{switch_prefix}Naanu nimma package status eega check madthene. Dayavittu nimma tracking athava waybill number heli?"
+                    elif detected_lang == 'hi':
+                        reply = f"{switch_prefix}Main abhi aapka package status check kar deta hoon. Kripya apna tracking ya waybill number bataiye?"
+                    else:
+                        reply = f"{switch_prefix}I would be happy to look that up for you! Could you please share your tracking or waybill number?"
+                elif "inquiry_type" in next_keys:
+                    if detected_lang == 'kn':
+                        reply = f"{switch_prefix}Nimma delivery bagge nimge yavudhu sahaya beku? Package status, delivery delay, athava address change a?"
+                    elif detected_lang == 'hi':
+                        reply = f"{switch_prefix}Aapko apni delivery ke baare mein kya jankari chahiye? Package status, delivery delay, ya address change?"
+                    else:
+                        reply = f"{switch_prefix}How can I assist with your delivery today? Are you looking for package status, reporting a delay, or requesting a callback?"
                 else:
-                    reply = f"{switch_prefix}Thank you! Your cake order enquiry ({e_res.get('enquiry_id')}) for a {e_res.get('weight_kg')}kg {e_res.get('flavor')} {e_res.get('cake_type')} ({e_res.get('delivery_preference')}) has been created! A structured summary has been sent to our shop owner {owner_n}. {workflow['closing_message']}"
-
-            elif delivery_tool and delivery_tool.get("result", {}).get("success"):
-                d_res = delivery_tool["result"]
-                if detected_lang == 'kn':
-                    reply = f"{switch_prefix}Namaskara! Nimma hosadhu delivery request {d_res.get('delivery_id')} confirm agide ({d_res.get('pickup_location')} -> {d_res.get('delivery_location')}, {d_res.get('package_type')}). {workflow['closing_message']}"
-                elif detected_lang == 'hi':
-                    reply = f"{switch_prefix}Aapka naya delivery request {d_res.get('delivery_id')} register ho gaya hai ({d_res.get('pickup_location')} se {d_res.get('delivery_location')}, {d_res.get('package_type')})! {workflow['closing_message']}"
-                else:
-                    reply = f"{switch_prefix}Your new delivery request ({d_res.get('delivery_id')}) from {d_res.get('pickup_location')} to {d_res.get('delivery_location')} ({d_res.get('package_type')}) for {d_res.get('preferred_time')} has been successfully registered! {workflow['closing_message']}"
-
-            elif callback_tool and callback_tool.get("result", {}).get("success"):
-                cb_res = callback_tool["result"]
-                if detected_lang == 'kn':
-                    reply = f"{switch_prefix}Nimma delivery support callback task ({cb_res.get('task_id')}) dispatch team ge assign agide. Agent nimge {caller_phone} ge call madthare."
-                elif detected_lang == 'hi':
-                    reply = f"{switch_prefix}Aapka delivery support callback task ({cb_res.get('task_id')}) dispatch team ko assign kar diya gaya hai. Agent aapko {caller_phone} par call karega."
-                else:
-                    reply = f"{switch_prefix}A dispatch callback task ({cb_res.get('task_id')}) has been assigned to our customer support team regarding your delivery inquiry. Our agent will call you back shortly at {caller_phone}."
-
-            elif tracking_tool and tracking_tool.get("result"):
-                t_res = tracking_tool["result"]
-                if detected_lang == 'kn':
-                    reply = f"{switch_prefix}Nimma package status check madalaagide. Tracking #{t_res.get('tracking_number')} '{t_res.get('status')}' nallide ({t_res.get('current_location')}). Delivery agent nimge contact madthare."
-                elif detected_lang == 'hi':
-                    reply = f"{switch_prefix}Maine aapka package status check kiya hai. Tracking #{t_res.get('tracking_number')} abhi '{t_res.get('status')}' mein hai ({t_res.get('current_location')}). Driver {t_res.get('driver_name', 'Rohan')} contact karega."
-                else:
-                    reply = f"{switch_prefix}I queried our delivery API. Tracking #{t_res.get('tracking_number')} is currently '{t_res.get('status')}' at {t_res.get('current_location')}. Estimated delivery: {t_res.get('estimated_delivery', 'today')}."
-
-            elif create_tool and create_tool.get("result", {}).get("success"):
-                c_res = create_tool["result"]
-                st_formatted = c_res.get("start_time", "tomorrow")
-                try:
-                    dt = datetime.fromisoformat(st_formatted.replace("Z", "+00:00"))
-                    st_formatted = dt.strftime("%B %d at %I:%M %p")
-                except Exception:
-                    pass
-
-                if detected_lang == 'kn':
-                    reply = f"{switch_prefix}Namaskara! Nimma appointment Google Calendar nalli confirm agide ({st_formatted}). {workflow['closing_message']}"
-                elif detected_lang == 'hi':
-                    reply = f"{switch_prefix}Aapka appointment Google Calendar par confirm ho gaya hai ({st_formatted})! {workflow['closing_message']}"
-                else:
-                    reply = f"{switch_prefix}Your appointment has been successfully scheduled on Google Calendar for {st_formatted}! {workflow['closing_message']}"
-            elif check_tool and check_tool.get("result", {}).get("available") is False:
-                chk_res = check_tool["result"]
-                rec_slots = ", ".join(chk_res.get("recommended_slots", ["5:00 PM", "6:00 PM"]))
-                if detected_lang == 'kn':
-                    reply = f"{switch_prefix}Namaskara! Nimma requested time slot Google Calendar nalli already book agide. Alternative open slots: {rec_slots}. Eavudanna book madabeka?"
-                elif detected_lang == 'hi':
-                    reply = f"{switch_prefix}Namaste! Aapka maanga hua time slot Google Calendar par pehle se booked hai. Subah/shaam ke recommended open slots: {rec_slots} hain. Kya aap inme se koi slot book karna chahenge?"
-                else:
-                    reply = f"{switch_prefix}Your requested time slot is currently booked on Google Calendar. Recommended available open slots: {rec_slots}. Would you like me to book one of these for you?"
-            elif cancel_tool:
-                if detected_lang == 'kn':
-                    reply = f"{switch_prefix}Nimma appointment cancel madalaagide. Dhanyavada!"
-                elif detected_lang == 'hi':
-                    reply = f"{switch_prefix}Aapka appointment cancel kar diya gaya hai. Dhanyawad!"
-                else:
-                    reply = f"{switch_prefix}Your appointment has been cancelled successfully. Thank you!"
-            elif update_tool:
-                if detected_lang == 'kn':
-                    reply = f"{switch_prefix}Nimma appointment update madalaagide. {workflow['closing_message']}"
-                elif detected_lang == 'hi':
-                    reply = f"{switch_prefix}Aapka appointment reschedule kar diya gaya hai. {workflow['closing_message']}"
-                else:
-                    reply = f"{switch_prefix}Your appointment has been rescheduled successfully! {workflow['closing_message']}"
-            elif len(messages) <= 1 and is_after_hours and b_hours and b_hours.get("after_hours_greeting"):
-                reply = f"{switch_prefix}{b_hours['after_hours_greeting']}"
-            elif len(messages) <= 2:
-                if detected_lang == 'kn':
-                    reply = f"{switch_prefix}Namaskara! {business['name']} ge swagatha. Naavu nimma call miss madidve. Nimge hege sahaya madabeku?"
-                elif detected_lang == 'hi':
-                    reply = f"{switch_prefix}Namaste! {business['name']} mein aapka swagat hai. Humne aapka missed call dekha. Hum aapki kya madad kar sakte hain?"
-                else:
-                    reply = f"{switch_prefix}{workflow['greeting']}"
+                    first_label = missing_required[0]['label']
+                    if detected_lang == 'kn':
+                        reply = f"{switch_prefix}Dayavittu nimma {first_label} bagge details thilisi?"
+                    elif detected_lang == 'hi':
+                        reply = f"{switch_prefix}Kripya apna {first_label} bata dijiye?"
+                    else:
+                        reply = f"{switch_prefix}Could you please share your {first_label} so I can record that for you?"
             else:
-                if is_after_hours and b_hours and b_hours.get("after_hours_greeting"):
-                    reply = f"{switch_prefix}Thank you! We have logged your request. Note that our operating hours are Mon-Sat 9 AM to 6 PM."
-                elif detected_lang == 'kn':
-                    reply = f"{switch_prefix}Thumba dhanyavadagalu! {business['name']} ge nimma mahithi note madikollalaagide. {workflow['closing_message']}"
-                elif detected_lang == 'hi':
-                    reply = f"{switch_prefix}Bahut dhanyawad! Maine aapke details ({business['name']}) note kar liye hain. {workflow['closing_message']}"
-                else:
-                    reply = f"{switch_prefix}Thank you! I have captured all the necessary information for {business['name']}. {workflow['closing_message']}"
+                # Completion Confirmation Fallback
+                enquiry_tool = next((t for t in executed_tools if t["tool"] == "create_order_enquiry"), None)
+                delivery_tool = next((t for t in executed_tools if t["tool"] == "create_delivery_request"), None)
+                tracking_tool = next((t for t in executed_tools if t["tool"] == "track_delivery_status"), None)
+                callback_tool = next((t for t in executed_tools if t["tool"] == "create_callback_task"), None)
+                create_tool = next((t for t in executed_tools if t["tool"] == "create_calendar_event"), None)
 
-        # 5. DB Persistence & Automatic Follow-Up Tagging
-        followup_status = "Follow Up Needed" if (is_after_hours or urgency in ["Urgent", "Critical"]) else "Pending"
+                if enquiry_tool and enquiry_tool.get("result", {}).get("success"):
+                    e_res = enquiry_tool["result"]
+                    owner_n = business.get('owner_name', 'Ananya Sharma')
+                    if detected_lang == 'kn':
+                        reply = f"{switch_prefix}Namaskara! Nimma cake order enquiry ({e_res.get('enquiry_id')}) submit agide ({e_res.get('weight_kg')}kg {e_res.get('flavor')} {e_res.get('cake_type')}, {e_res.get('delivery_preference')}). Shop owner {owner_n} ge alert kalisalaagide. {workflow['closing_message']}"
+                    elif detected_lang == 'hi':
+                        reply = f"{switch_prefix}Namaste! Aapka cake order enquiry ({e_res.get('enquiry_id')}) submit ho gaya hai ({e_res.get('weight_kg')}kg {e_res.get('flavor')} {e_res.get('cake_type')}, {e_res.get('delivery_preference')})! Shop owner {owner_n} ko summary bhej di gayi hai. {workflow['closing_message']}"
+                    else:
+                        reply = f"{switch_prefix}Thank you! Your cake order enquiry ({e_res.get('enquiry_id')}) for a {e_res.get('weight_kg')}kg {e_res.get('flavor')} ({e_res.get('delivery_preference')}) has been created! A summary has been sent to our shop owner {owner_n}. {workflow['closing_message']}"
+
+                elif tracking_tool and tracking_tool.get("result"):
+                    t_res = tracking_tool["result"]
+                    if detected_lang == 'kn':
+                        reply = f"{switch_prefix}Nimma package status check madalaagide. Tracking #{t_res.get('tracking_number')} '{t_res.get('status')}' nallide ({t_res.get('current_location')}). Delivery agent nimge contact madthare."
+                    elif detected_lang == 'hi':
+                        reply = f"{switch_prefix}Maine aapka package status check kiya hai. Tracking #{t_res.get('tracking_number')} abhi '{t_res.get('status')}' mein hai ({t_res.get('current_location')}). Driver contact karega."
+                    else:
+                        reply = f"{switch_prefix}I checked tracking number {t_res.get('tracking_number')}. It is currently '{t_res.get('status')}' at {t_res.get('current_location')}. Estimated delivery: {t_res.get('estimated_delivery', 'today')}."
+
+                elif callback_tool and callback_tool.get("result", {}).get("success"):
+                    cb_res = callback_tool["result"]
+                    if detected_lang == 'kn':
+                        reply = f"{switch_prefix}Nimma delivery support callback task ({cb_res.get('task_id')}) assign agide. Agent nimge {caller_phone} ge call madthare."
+                    elif detected_lang == 'hi':
+                        reply = f"{switch_prefix}Aapka delivery callback task ({cb_res.get('task_id')}) assign kar diya gaya hai. Agent aapko {caller_phone} par call karega."
+                    else:
+                        reply = f"{switch_prefix}A customer support callback task ({cb_res.get('task_id')}) has been registered. Our agent will call you back shortly at {caller_phone}."
+
+                elif create_tool and create_tool.get("result", {}).get("success"):
+                    c_res = create_tool["result"]
+                    if detected_lang == 'kn':
+                        reply = f"{switch_prefix}Namaskara! Nimma appointment confirm agide ({c_res.get('start_time')}). {workflow['closing_message']}"
+                    elif detected_lang == 'hi':
+                        reply = f"{switch_prefix}Aapka appointment confirm ho gaya hai ({c_res.get('start_time')})! {workflow['closing_message']}"
+                    else:
+                        reply = f"{switch_prefix}Your appointment has been successfully scheduled for {c_res.get('start_time')}! {workflow['closing_message']}"
+
+                else:
+                    if detected_lang == 'kn':
+                        reply = f"{switch_prefix}Thumba dhanyavadagalu! {business['name']} ge nimma mahithi note madikollalaagide. {workflow['closing_message']}"
+                    elif detected_lang == 'hi':
+                        reply = f"{switch_prefix}Bahut dhanyawad! Maine aapke details ({business['name']}) note kar liye hain. {workflow['closing_message']}"
+                    else:
+                        reply = f"{switch_prefix}Thank you! I have captured all the necessary information for {business['name']}. {workflow['closing_message']}"
+
+        # 8. DB Persistence & Automatic Follow-Up Tagging
+        followup_status = "Completed" if is_complete else "Pending"
         if is_after_hours or urgency in ["Urgent", "Critical"]:
+            followup_status = "Follow Up Needed"
             collected_data_dict["lead_status"] = "Follow Up Needed"
             collected_data_dict["urgency_tag"] = urgency
 
-        rec_id = request_data.get("record_id") or f"rec-{str(uuid.uuid4())[:8]}"
         now_str = datetime.now(timezone.utc).isoformat()
         full_transcript = messages + [{"role": "assistant", "content": reply}]
         tools_str = ", ".join(t["tool"] for t in executed_tools) or "None"
-        summary = f"Caller ({caller_name}) contacted {business['name']} for {workflow['name']}. Tools executed: {tools_str}. Priority: {urgency}. Language: {detected_lang.upper()} (Switched: {language_switched})."
+        summary = f"Caller ({caller_name}) contacted {business['name']} for {workflow['name']}. Status: {'Completed' if is_complete else 'Collecting Fields'}. Fields: {list(collected_data_dict.keys())}. Tools: {tools_str}. Urgency: {urgency}. Lang: {detected_lang.upper()}."
 
         with get_db_connection() as conn:
             existing = conn.execute(text("SELECT id FROM records WHERE id = :id"), {"id": rec_id}).fetchone()
@@ -666,5 +686,8 @@ class AiService:
             "language": detected_lang,
             "language_switched": language_switched,
             "urgency": urgency,
-            "executed_tools": executed_tools
+            "executed_tools": executed_tools,
+            "collected_data": collected_data_dict,
+            "missing_fields": [f["key"] for f in missing_required],
+            "is_complete": is_complete
         }

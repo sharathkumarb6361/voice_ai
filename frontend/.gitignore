@@ -1,0 +1,25 @@
+# Node dependencies & build output
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+frontend/dist/
+backend/dist/
+.vite/
+*.tsbuildinfo
+
+# Python bytecode & environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# Local SQLite databases
+backend/data/*.db
+*.db
+
+# Environment variables
+.env
+.env.local
+backend/.env

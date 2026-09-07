@@ -428,3 +428,70 @@ interface BusinessHours {
 }
 ```
 
+---
+
+## 6. Schema-Driven Dynamic Slot-Filling & Multi-Turn State Persistence
+
+To provide completely conversational, form-filling capabilities without robotic rigidity, the system implements dynamic schema-driven slot filling:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Caller as 📞 Caller (Voice / Speech)
+    participant Client as 💻 Phone Simulator (React)
+    participant API as 🚀 FastAPI (/api/ai/chat)
+    participant Engine as 🧠 AiService (Slot-Filling Engine)
+    participant Groq as ⚡ Groq LPU (GPT-OSS-120B)
+    participant DB as 🗄️ SQLite / PostgreSQL (records)
+    participant Tools as 🛠️ Domain Tools (External APIs)
+
+    Caller->>Client: "I want to order a birthday cake"
+    Client->>API: POST /api/ai/chat (record_id=null)
+    API->>Engine: process_conversation(request_data)
+    Engine->>Groq: Extract fields matching workflow['fields']
+    Groq-->>Engine: {"order_type": "New Cake Order"}
+    Engine->>DB: INSERT INTO records (collected_data={"order_type": "..."})
+    Engine->>Engine: Evaluate missing required fields: [cake_flavor, weight_kg, required_date, delivery_pref]
+    Engine->>Groq: Generate conversational question for next 1-2 missing fields
+    Groq-->>Engine: "Sure! What flavor of cake would you like, and how many kilograms?"
+    Engine-->>Client: Return reply, record_id: "rec-xxx", collected_data
+    Client-->>Caller: Speaks AI question via Sarvam AI TTS (continuous mic stays active)
+
+    Caller->>Client: "Dark chocolate, 2 kg"
+    Client->>API: POST /api/ai/chat (record_id="rec-xxx")
+    API->>Engine: process_conversation(record_id="rec-xxx")
+    Engine->>DB: SELECT collected_data WHERE id="rec-xxx"
+    Engine->>Groq: Extract new fields from utterance
+    Groq-->>Engine: {"cake_flavor": "Dark chocolate", "weight_kg": 2}
+    Engine->>DB: UPDATE records (collected_data merged)
+    Engine->>Engine: Missing: [required_date, delivery_pref]
+    Engine-->>Client: "A 2 kg dark chocolate cake sounds delicious! When do you need it by, and home delivery or pickup?"
+
+    Caller->>Client: "Tomorrow 6 PM, home delivery please"
+    Client->>API: POST /api/ai/chat (record_id="rec-xxx")
+    Engine->>Groq: Extract {"required_date": "...", "delivery_pref": "Home Delivery"}
+    Engine->>DB: UPDATE records (all required fields now complete!)
+    Engine->>Engine: All required fields satisfied -> Trigger completion tools!
+    Engine->>Tools: execute create_order_enquiry & send_owner_summary_alert
+    Tools-->>Engine: Enquiry ID ENQ-xxxx created, owner alert dispatched
+    Engine->>DB: UPDATE records (status="Completed", tools_executed=[...])
+    Engine-->>Client: Confirm order details + workflow['closing_message']
+    Client-->>Caller: Speaks final confirmation with human-like voice
+```
+
+### Key Architectural Highlights:
+1. **Schema-Driven (Zero Hardcoding)**:
+   - Fields are loaded directly from `workflows.fields` in SQLite.
+   - Any new workflow created via the Workflow Builder automatically gains progressive slot-filling.
+2. **Multi-Turn Session Continuity**:
+   - `record_id` is maintained across conversational turns.
+   - Each turn updates the existing database record with merged slot data in `records.collected_data`.
+3. **Multilingual Entity Extraction**:
+   - Groq LPUs (`openai/gpt-oss-120b`) extract entities directly from English, Hindi, Hinglish, and Kannada speech.
+   - Dual-layer extraction: LLM JSON mode extraction is backed by heuristic regex extractors for date/time, weights, flavors, waybill numbers, and locations.
+4. **Completion Tool Gating**:
+   - Business actions (`create_order_enquiry`, `track_delivery_status`, `create_calendar_event`) are held until all required fields are provided.
+5. **Real-Time UI Tracker**:
+   - Phone Simulator features a live "Database Fields" status card showing captured fields, pending questions, and live percentage progress.
+
+
