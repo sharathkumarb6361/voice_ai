@@ -493,5 +493,9 @@ sequenceDiagram
    - Business actions (`create_order_enquiry`, `track_delivery_status`, `create_calendar_event`) are held until all required fields are provided.
 5. **Real-Time UI Tracker**:
    - Phone Simulator features a live "Database Fields" status card showing captured fields, pending questions, and live percentage progress.
+6. **Continuous Hands‑Free Voice Interaction**:
+   - Microphone stream stays active across turns with voice‑activity detection, enabling seamless hands‑free conversations without push‑to‑talk.
+7. **Live Database Field Tracking**:
+   - Extracted slots are persisted instantly to `records.collected_data`, providing real‑time visibility in the dashboard and enabling downstream analytics.
 
 
