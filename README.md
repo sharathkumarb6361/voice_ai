@@ -47,6 +47,7 @@ Architected with a **Python FastAPI** backend engine and a **React.js (Vite + Ty
 ### 1. Multi-Industry Business Support
 - 🍰 **Sweet Treats Bakery (Cake Shop)**: Collects cake flavor, weight, delivery date/time, custom message, delivery preference, and budget. Flags orders needed within 24 hours as **URGENT** priority.
 - 🚚 **SwiftMove Express (Logistics & Delivery)**: Performs live package status tracking and dispatch requests using **External REST API Tool Calling** (`track_delivery_status` for waybill `#TRK-9821-IN`).
+- 🏥 **Apex Health Clinic**: Manages patient appointments, symptoms triaging, and urgent health alerts.
 
 ### 2. Interactive Phone Simulator
 - Real-time simulated voice call interface with caller identification.
@@ -57,21 +58,18 @@ Architected with a **Python FastAPI** backend engine and a **React.js (Vite + Ty
 - Visual step-by-step workflow editor per business.
 - Configurable triggers (Missed Call, After-Hours Call), opening greetings, required and optional data fields, conditional urgency rules, automated tool actions, and closing messages.
 
-### 4. AI Tool Calling & Calendar Integration
-- Real-time tool execution during voice conversation:
-  - `check_calendar_availability`: Checks conflict-free slots on Google Calendar.
-  - `create_calendar_event`: Books confirmed appointments directly.
-  - `update_calendar_event` / `cancel_calendar_event`: Reschedules or cancels existing bookings.
-  - `track_delivery_status`: Queries live parcel status.
-  - `lookup_crm_customer`: Fetches customer profile and previous orders.
+### 4. Advanced AI Orchestration
+- **Agentic Tool Calling**: Automatic context-switching between 15+ specialized business tools.
+- **Latency Optimization**: Sub-500ms response cycles via Groq LPU streaming.
+- **Contextual Memory**: Persistent caller history and relationship management.
 
 ### 5. Multi-Language Intelligence
 - Native multi-lingual processing in **English**, **Hindi (हिन्दी)**, and **Kannada (ಕನ್ನಡ)**.
 - Dynamic language detection that automatically switches mid-call.
 
 ### 6. Small Business Management Dashboard
-- Filter, inspect, and manage caller leads, collected customer details, AI conversation summaries, and priority tags (**Normal**, **Urgent**, **Critical**).
-- One-click workflow status updates: *Pending*, *Owner Contacted*, *Completed*, *Closed*.
+- Analytics & Insights: Visual graphs of call volume, lead conversion rates, and busiest business hours.
+- Automated CRM: Automatic lead generation, tag-based segmentation, and follow-up reminders.
 
 ---
 
