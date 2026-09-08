@@ -152,10 +152,7 @@ The database comes pre-seeded with 5 realistic business accounts and 1 Master Ad
 | Business Name | Industry | Owner | Email Address | Password |
 | :--- | :--- | :--- | :--- | :--- |
 | **Sweet Treats Bakery** | Cake Shop | Ananya Sharma | `orders@sweettreats.com` | `password123` |
-| **Apex Health Clinic** | Clinic / Healthcare | Dr. Ramesh Kumar | `contact@apexcare.com` | `password123` |
 | **SwiftMove Express** | Logistics & Delivery | Vikram Singh | `support@swiftmove.com` | `password123` |
-| **Prime Haven Realty** | Real Estate | Rajesh Mehta | `sales@primehaven.com` | `password123` |
-| **FixIt Pro Maintenance** | Home Repair | Suresh Babu | `dispatch@fixitpro.com` | `password123` |
 | **Master Admin** | All Accounts View | Platform Admin | `admin@voiceassistant.ai` | `password123` |
 
 > [!TIP]
