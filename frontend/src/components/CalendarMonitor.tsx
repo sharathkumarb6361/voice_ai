@@ -1,11 +1,16 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { CalendarEvent, Business } from '../types';
 import { checkCalendarAvailability, syncGoogleCalendar } from '../lib/api';
 
 interface CalendarMonitorProps {
   events: CalendarEvent[];
   businesses?: Business[];
+  defaultBusinessFilter?: string;
+  initialTargetDate?: string | null;
+  onTargetDateConsumed?: () => void;
   onCancelEvent?: (eventId: string) => Promise<void>;
+  onDeleteEvent?: (eventId: string) => Promise<void>;
+  onDeleteAllEvents?: () => Promise<void>;
   onCreateEvent?: (data: Partial<CalendarEvent>) => Promise<void>;
   onUpdateEvent?: (eventId: string, data: Partial<CalendarEvent>) => Promise<void>;
   onSyncCalendar?: () => Promise<any>;
@@ -15,18 +20,42 @@ interface CalendarMonitorProps {
 export const CalendarMonitor: React.FC<CalendarMonitorProps> = ({
   events,
   businesses = [],
+  defaultBusinessFilter = 'All',
+  initialTargetDate,
+  onTargetDateConsumed,
   onCancelEvent,
+  onDeleteEvent,
+  onDeleteAllEvents,
   onCreateEvent,
   onUpdateEvent,
   onSyncCalendar,
   onRefresh
 }) => {
   const today = new Date();
-  const [selectedDate, setSelectedDate] = useState<number | null>(today.getDate());
-  const [businessFilter, setBusinessFilter] = useState('All');
+  
+  // View Month State for navigation
+  const [viewDate, setViewDate] = useState<Date>(() => {
+    if (initialTargetDate) {
+      const d = new Date(initialTargetDate);
+      if (!isNaN(d.getTime())) return d;
+    }
+    return new Date();
+  });
+
+  const [selectedDate, setSelectedDate] = useState<number | null>(() => {
+    if (initialTargetDate) {
+      const d = new Date(initialTargetDate);
+      if (!isNaN(d.getTime())) return d.getDate();
+    }
+    return today.getDate();
+  });
+
+  const [businessFilter, setBusinessFilter] = useState(defaultBusinessFilter || 'All');
   const [statusFilter, setStatusFilter] = useState('All');
   const [searchQuery, setSearchQuery] = useState('');
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [isClearing, setIsClearing] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [syncStatusMsg, setSyncStatusMsg] = useState<string | null>(null);
 
@@ -39,7 +68,7 @@ export const CalendarMonitor: React.FC<CalendarMonitorProps> = ({
   // Schedule Modal State
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
-  const [newBusinessId, setNewBusinessId] = useState(businesses[0]?.id || 'biz-clinic-01');
+  const [newBusinessId, setNewBusinessId] = useState(businesses[0]?.id || 'biz-cake-01');
   const [newDate, setNewDate] = useState(today.toISOString().split('T')[0]);
   const [newTime, setNewTime] = useState('14:00');
   const [newDuration, setNewDuration] = useState('30');
@@ -59,31 +88,102 @@ export const CalendarMonitor: React.FC<CalendarMonitorProps> = ({
   const [editStatus, setEditStatus] = useState('Confirmed');
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
 
-  const currentMonthName = today.toLocaleString('default', { month: 'long', year: 'numeric' });
-  const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-  const firstDayIndex = new Date(today.getFullYear(), today.getMonth(), 1).getDay();
+  // Month navigation calculations
+  const currentMonthName = viewDate.toLocaleString('default', { month: 'long', year: 'numeric' });
+  const currentYear = viewDate.getFullYear();
+  const currentMonth = viewDate.getMonth();
+  const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+  const firstDayIndex = new Date(currentYear, currentMonth, 1).getDay();
+
+  // Calendar events are already preloaded by App on tab navigation
+
+  // Jump to target date if supplied externally (e.g. from Phone Simulator)
+  useEffect(() => {
+    if (initialTargetDate) {
+      const d = new Date(initialTargetDate);
+      if (!isNaN(d.getTime())) {
+        setViewDate(d);
+        setSelectedDate(d.getDate());
+        if (onTargetDateConsumed) onTargetDateConsumed();
+      }
+    }
+  }, [initialTargetDate]);
+
+  // Update default business filter if parent changes authenticated owner
+  useEffect(() => {
+    if (defaultBusinessFilter && defaultBusinessFilter !== 'All') {
+      setBusinessFilter(defaultBusinessFilter);
+    }
+  }, [defaultBusinessFilter]);
+
+  // Month Navigation Handlers
+  const handlePrevMonth = () => {
+    setViewDate(prev => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
+    setSelectedDate(null);
+  };
+
+  const handleNextMonth = () => {
+    setViewDate(prev => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
+    setSelectedDate(null);
+  };
+
+  const handleGoToToday = () => {
+    const t = new Date();
+    setViewDate(t);
+    setSelectedDate(t.getDate());
+  };
 
   // Filter events
-  const filteredEvents = events.filter(evt => {
-    const matchesBiz = businessFilter === 'All' || evt.business_id === businessFilter;
-    const matchesStatus = statusFilter === 'All' || evt.status === statusFilter;
-    const searchLower = searchQuery.toLowerCase().trim();
-    const matchesSearch = !searchLower || (
-      evt.title.toLowerCase().includes(searchLower) ||
-      evt.attendee_name.toLowerCase().includes(searchLower) ||
-      evt.attendee_phone.toLowerCase().includes(searchLower) ||
-      (evt.description || '').toLowerCase().includes(searchLower)
-    );
-    return matchesBiz && matchesStatus && matchesSearch;
-  });
+  const filteredEvents = useMemo(() => {
+    return events.filter(evt => {
+      const matchesBiz = businessFilter === 'All' || evt.business_id === businessFilter;
+      const matchesStatus = statusFilter === 'All' || evt.status === statusFilter;
+      const searchLower = searchQuery.toLowerCase().trim();
+      const matchesSearch = !searchLower || (
+        evt.title.toLowerCase().includes(searchLower) ||
+        evt.attendee_name.toLowerCase().includes(searchLower) ||
+        evt.attendee_phone.toLowerCase().includes(searchLower) ||
+        (evt.description || '').toLowerCase().includes(searchLower)
+      );
+      return matchesBiz && matchesStatus && matchesSearch;
+    });
+  }, [events, businessFilter, statusFilter, searchQuery]);
+
+  // Upcoming confirmed events list sorted chronologically
+  const upcomingEvents = useMemo(() => {
+    const nowMs = Date.now() - 3600000;
+    return [...filteredEvents]
+      .filter(evt => {
+        const d = new Date(evt.start_time).getTime();
+        return !isNaN(d) && d >= nowMs && evt.status !== 'Cancelled';
+      })
+      .sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
+  }, [filteredEvents]);
+
+  // Auto-select date with events if current selected date has no events on initial load
+  useEffect(() => {
+    if (selectedDate === today.getDate() && filteredEvents.length > 0) {
+      const todayEvents = filteredEvents.filter(evt => {
+        const d = new Date(evt.start_time);
+        return !isNaN(d.getTime()) && d.getDate() === today.getDate() && d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear();
+      });
+      if (todayEvents.length === 0 && upcomingEvents.length > 0) {
+        const firstUpcoming = new Date(upcomingEvents[0].start_time);
+        if (firstUpcoming.getMonth() === currentMonth && firstUpcoming.getFullYear() === currentYear) {
+          setSelectedDate(firstUpcoming.getDate());
+        }
+      }
+    }
+  }, [filteredEvents, upcomingEvents]);
 
   const getEventsForDay = (day: number) => {
     return filteredEvents.filter(evt => {
       const evtDate = new Date(evt.start_time);
+      if (isNaN(evtDate.getTime())) return false;
       return (
         evtDate.getDate() === day &&
-        evtDate.getMonth() === today.getMonth() &&
-        evtDate.getFullYear() === today.getFullYear()
+        evtDate.getMonth() === currentMonth &&
+        evtDate.getFullYear() === currentYear
       );
     });
   };
@@ -119,6 +219,47 @@ export const CalendarMonitor: React.FC<CalendarMonitorProps> = ({
     }
   };
 
+  const handleDelete = async (eventId: string, title: string) => {
+    if (!window.confirm(`Are you sure you want to permanently delete the calendar appointment "${title}"?`)) {
+      return;
+    }
+    setDeletingId(eventId);
+    try {
+      if (onDeleteEvent) {
+        await onDeleteEvent(eventId);
+      }
+      if (editingEvent?.id === eventId) {
+        setEditingEvent(null);
+      }
+      setSyncStatusMsg(`Appointment "${title}" was permanently deleted.`);
+      setTimeout(() => setSyncStatusMsg(null), 4000);
+    } catch (err: any) {
+      alert(`Delete failed: ${err.message}`);
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const handleClearAll = async () => {
+    if (events.length === 0) return;
+    if (!window.confirm(`Are you sure you want to permanently delete ALL ${events.length} calendar appointment(s)? This action cannot be undone.`)) {
+      return;
+    }
+    setIsClearing(true);
+    try {
+      if (onDeleteAllEvents) {
+        await onDeleteAllEvents();
+      }
+      setEditingEvent(null);
+      setSyncStatusMsg(`Successfully removed all ${events.length} calendar appointments.`);
+      setTimeout(() => setSyncStatusMsg(null), 4000);
+    } catch (err: any) {
+      alert(`Clear all failed: ${err.message}`);
+    } finally {
+      setIsClearing(false);
+    }
+  };
+
   const handleRunSlotCheck = async () => {
     setIsCheckingSlot(true);
     setCheckResult(null);
@@ -133,7 +274,7 @@ export const CalendarMonitor: React.FC<CalendarMonitorProps> = ({
   };
 
   const openScheduleModalForDate = (day: number) => {
-    const formattedDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const formattedDate = `${viewDate.getFullYear()}-${String(viewDate.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
     setNewDate(formattedDate);
     setIsScheduleModalOpen(true);
   };
@@ -165,6 +306,13 @@ export const CalendarMonitor: React.FC<CalendarMonitorProps> = ({
         await onCreateEvent(payload);
       } else {
         alert('Appointment successfully created.');
+      }
+
+      // Automatically focus on the newly scheduled date
+      const scheduledD = new Date(`${newDate}T00:00:00`);
+      if (!isNaN(scheduledD.getTime())) {
+        setViewDate(scheduledD);
+        setSelectedDate(scheduledD.getDate());
       }
 
       setIsScheduleModalOpen(false);
@@ -321,90 +469,154 @@ export const CalendarMonitor: React.FC<CalendarMonitorProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 sm:gap-8">
         {/* Left Column: Monthly Calendar Visual Grid */}
         <div className="lg:col-span-8 glass-panel p-4 sm:p-6 space-y-4">
-          <div className="flex items-center justify-between border-b border-white/10 pb-3">
-            <h3 className="text-base font-bold text-white flex items-center gap-2">
-              <i className="fa-solid fa-calendar text-indigo-400" /> {currentMonthName}
-            </h3>
-            <span className="text-xs font-semibold text-purple-300 bg-purple-950/50 px-3 py-1 rounded-full border border-purple-500/20">
-              {filteredEvents.length} Events Listed
-            </span>
+          <div className="flex flex-wrap items-center justify-between border-b border-white/10 pb-3 gap-2">
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <i className="fa-solid fa-calendar text-indigo-400" /> {currentMonthName}
+              </h3>
+              <div className="flex items-center gap-1 bg-slate-900 border border-white/10 rounded-xl p-0.5 ml-2">
+                <button
+                  onClick={handlePrevMonth}
+                  className="p-1.5 hover:bg-slate-800 text-slate-400 hover:text-white rounded-lg text-xs transition-colors cursor-pointer"
+                  title="Previous Month"
+                >
+                  <i className="fa-solid fa-chevron-left" />
+                </button>
+                <button
+                  onClick={handleGoToToday}
+                  className="px-2.5 py-1 hover:bg-slate-800 text-slate-300 hover:text-white rounded-lg text-[11px] font-bold transition-colors cursor-pointer"
+                  title="Go to Current Month & Today"
+                >
+                  Today
+                </button>
+                <button
+                  onClick={handleNextMonth}
+                  className="p-1.5 hover:bg-slate-800 text-slate-400 hover:text-white rounded-lg text-xs transition-colors cursor-pointer"
+                  title="Next Month"
+                >
+                  <i className="fa-solid fa-chevron-right" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-purple-300 bg-purple-950/50 px-3 py-1 rounded-full border border-purple-500/20">
+                {filteredEvents.length} Total Events
+              </span>
+            </div>
           </div>
 
           {/* Days of Week Header */}
           <div className="grid grid-cols-7 text-center text-[10px] sm:text-xs font-bold text-slate-400 py-1 border-b border-white/5">
-            <div>Sun</div>
-            <div>Mon</div>
-            <div>Tue</div>
-            <div>Wed</div>
-            <div>Thu</div>
-            <div>Fri</div>
-            <div>Sat</div>
+            <div><span className="sm:hidden">Su</span><span className="hidden sm:inline">Sun</span></div>
+            <div><span className="sm:hidden">Mo</span><span className="hidden sm:inline">Mon</span></div>
+            <div><span className="sm:hidden">Tu</span><span className="hidden sm:inline">Tue</span></div>
+            <div><span className="sm:hidden">We</span><span className="hidden sm:inline">Wed</span></div>
+            <div><span className="sm:hidden">Th</span><span className="hidden sm:inline">Thu</span></div>
+            <div><span className="sm:hidden">Fr</span><span className="hidden sm:inline">Fri</span></div>
+            <div><span className="sm:hidden">Sa</span><span className="hidden sm:inline">Sat</span></div>
           </div>
 
           {/* Days Cells Grid */}
           <div className="grid grid-cols-7 gap-1 sm:gap-2">
             {/* Empty padding cells for first day offset */}
             {Array.from({ length: firstDayIndex }).map((_, i) => (
-              <div key={`empty-${i}`} className="h-14 sm:h-20 bg-slate-950/20 rounded-xl" />
+              <div key={`empty-${i}`} className="h-12 sm:h-22 bg-slate-950/20 rounded-xl border border-white/[0.02]" />
             ))}
 
             {/* Calendar Days */}
             {Array.from({ length: daysInMonth }).map((_, i) => {
               const day = i + 1;
-              const isToday = day === today.getDate();
+              const isToday = day === today.getDate() && currentMonth === today.getMonth() && currentYear === today.getFullYear();
               const isSelected = selectedDate === day;
               const dayEvents = getEventsForDay(day);
+              const hasEvents = dayEvents.length > 0;
 
               return (
                 <div
                   key={day}
                   onClick={() => setSelectedDate(day)}
-                  className={`h-14 sm:h-20 p-1 sm:p-2 rounded-xl border transition-all cursor-pointer flex flex-col justify-between ${
+                  className={`h-12 sm:h-22 p-1 sm:p-2 rounded-xl border transition-all cursor-pointer flex flex-col justify-between relative group ${
                     isSelected
-                      ? 'bg-indigo-950/80 border-indigo-500 shadow-lg shadow-indigo-500/20'
+                      ? 'bg-indigo-950/90 border-indigo-400 shadow-lg shadow-indigo-500/30 ring-2 ring-indigo-500/40'
                       : isToday
-                      ? 'bg-purple-950/40 border-purple-500/50'
-                      : 'bg-slate-900/60 border-white/5 hover:border-white/20'
+                      ? 'bg-purple-950/50 border-purple-400/80 shadow-md shadow-purple-500/20'
+                      : hasEvents
+                      ? 'bg-slate-900/90 border-indigo-500/40 hover:border-indigo-400 shadow-sm'
+                      : 'bg-slate-900/40 border-white/5 hover:border-white/20'
                   }`}
                 >
                   <div className="flex items-center justify-between">
-                    <span className={`text-[10px] sm:text-xs font-bold ${isToday ? 'text-purple-300 bg-purple-500/20 px-1 rounded-full' : 'text-slate-300'}`}>
-                      {day}
-                    </span>
+                    <div className="flex items-center gap-1">
+                      <span className={`text-[10px] sm:text-xs font-bold ${
+                        isToday
+                          ? 'text-purple-200 bg-purple-600 px-1 sm:px-1.5 py-0.5 rounded-md shadow'
+                          : isSelected
+                          ? 'text-white font-extrabold'
+                          : 'text-slate-300'
+                      }`}>
+                        {day}
+                      </span>
+                      {hasEvents && (
+                        <span className="hidden sm:flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full text-[9px] font-extrabold bg-gradient-to-r from-purple-500 to-indigo-500 text-white shadow">
+                          {dayEvents.length}
+                        </span>
+                      )}
+                    </div>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         openScheduleModalForDate(day);
                       }}
-                      className="text-[9px] sm:text-[10px] text-slate-400 hover:text-indigo-300 transition-colors p-0.5"
+                      className="hidden sm:block opacity-0 group-hover:opacity-100 text-[10px] text-slate-300 hover:text-indigo-300 transition-all p-0.5 rounded hover:bg-white/10"
                       title="Schedule on this day"
                     >
                       <i className="fa-solid fa-plus" />
                     </button>
                   </div>
 
-                  {/* Day Event Pills */}
-                  <div className="space-y-1 overflow-hidden">
-                    {dayEvents.slice(0, 1).map(evt => (
+                  {/* Mobile Event Dots Indicator */}
+                  {hasEvents && (
+                    <div className="flex sm:hidden items-center justify-center gap-1 mt-0.5 flex-wrap">
+                      {dayEvents.slice(0, 3).map((evt, idx) => (
+                        <span
+                          key={idx}
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            evt.status === 'Cancelled'
+                              ? 'bg-rose-400'
+                              : evt.business_id === 'biz-cake-01' || evt.title.toLowerCase().includes('cake')
+                              ? 'bg-pink-400'
+                              : 'bg-indigo-400'
+                          }`}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Desktop Day Event Pills */}
+                  <div className="hidden sm:block space-y-1 overflow-hidden mt-1">
+                    {dayEvents.slice(0, 2).map(evt => (
                       <div
                         key={evt.id}
                         onClick={(e) => {
                           e.stopPropagation();
                           openEditModal(evt);
                         }}
-                        className={`text-[8px] sm:text-[9px] font-semibold truncate px-1 py-0.5 rounded border hover:scale-[1.02] transition-transform ${
+                        className={`text-[8px] sm:text-[9px] font-semibold truncate px-1.5 py-0.5 rounded border transition-transform hover:scale-[1.02] ${
                           evt.status === 'Cancelled'
-                            ? 'bg-rose-950/40 text-rose-300 border-rose-500/30 line-through'
-                            : 'bg-purple-600/30 text-purple-200 border-purple-500/30'
+                            ? 'bg-rose-950/50 text-rose-300 border-rose-500/30 line-through'
+                            : evt.business_id === 'biz-cake-01' || evt.title.toLowerCase().includes('cake')
+                            ? 'bg-pink-950/60 text-pink-200 border-pink-500/40'
+                            : 'bg-indigo-950/60 text-indigo-200 border-indigo-500/40'
                         }`}
-                        title={`${evt.title} (${evt.status}) - Click to edit`}
+                        title={`${evt.title} (${evt.status}) - Click to edit/reschedule`}
                       >
                         {evt.title}
                       </div>
                     ))}
-                    {dayEvents.length > 1 && (
+                    {dayEvents.length > 2 && (
                       <div className="text-[7px] sm:text-[8px] text-indigo-300 font-bold px-0.5">
-                        +{dayEvents.length - 1} more
+                        +{dayEvents.length - 2} more
                       </div>
                     )}
                   </div>
@@ -418,20 +630,53 @@ export const CalendarMonitor: React.FC<CalendarMonitorProps> = ({
         <div className="lg:col-span-4 space-y-6">
           {/* Selected Day Events */}
           <div className="glass-panel p-4 sm:p-5 space-y-4">
-            <h3 className="text-xs sm:text-sm font-bold text-indigo-300 uppercase tracking-wider flex items-center justify-between border-b border-white/10 pb-3">
-              <span>Day {selectedDate || today.getDate()} Appointments</span>
-              <span className="text-xs text-slate-400 font-mono">
-                {getEventsForDay(selectedDate || today.getDate()).length} Events
-              </span>
-            </h3>
+            <div className="border-b border-white/10 pb-3 flex items-center justify-between">
+              <div>
+                <h3 className="text-xs sm:text-sm font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <i className="fa-solid fa-calendar-day text-indigo-400" />
+                  <span>
+                    {selectedDate !== null
+                      ? new Date(currentYear, currentMonth, selectedDate).toLocaleDateString('default', {
+                          weekday: 'short',
+                          month: 'short',
+                          day: 'numeric'
+                        })
+                      : 'Selected Day'}
+                  </span>
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  {selectedDate !== null && getEventsForDay(selectedDate).length} appointment(s) scheduled
+                </p>
+              </div>
+
+              {selectedDate !== null && (
+                <button
+                  onClick={() => openScheduleModalForDate(selectedDate)}
+                  className="px-2.5 py-1 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/30 text-[11px] font-bold transition-all flex items-center gap-1"
+                  title="Schedule on selected date"
+                >
+                  <i className="fa-solid fa-plus text-[10px]" />
+                  Add
+                </button>
+              )}
+            </div>
 
             <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
-              {getEventsForDay(selectedDate || today.getDate()).length === 0 ? (
-                <div className="p-4 rounded-xl bg-slate-900/40 text-center text-slate-500 text-xs">
-                  No appointments scheduled for this date.
+              {selectedDate === null || getEventsForDay(selectedDate).length === 0 ? (
+                <div className="p-4 rounded-xl bg-slate-900/40 text-center space-y-2 border border-white/5">
+                  <p className="text-slate-400 text-xs">No appointments scheduled for this date.</p>
+                  {selectedDate !== null && (
+                    <button
+                      onClick={() => openScheduleModalForDate(selectedDate)}
+                      className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold transition-all shadow-md inline-flex items-center gap-1.5"
+                    >
+                      <i className="fa-solid fa-calendar-plus text-xs" />
+                      Schedule on Day {selectedDate}
+                    </button>
+                  )}
                 </div>
               ) : (
-                getEventsForDay(selectedDate || today.getDate()).map(evt => (
+                getEventsForDay(selectedDate).map(evt => (
                   <div
                     key={evt.id}
                     className="p-3 rounded-xl bg-purple-950/40 border border-purple-500/30 hover:border-purple-400 transition-all space-y-2 text-xs"
@@ -451,7 +696,7 @@ export const CalendarMonitor: React.FC<CalendarMonitorProps> = ({
                       <div className="flex items-center gap-1.5">
                         <button
                           onClick={() => openEditModal(evt)}
-                          className="px-2 py-0.5 rounded text-[10px] bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/30 transition-all"
+                          className="px-2 py-0.5 rounded text-[10px] bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/30 transition-all cursor-pointer"
                         >
                           Edit
                         </button>
@@ -459,7 +704,7 @@ export const CalendarMonitor: React.FC<CalendarMonitorProps> = ({
                           <button
                             onClick={() => handleCancel(evt.id)}
                             disabled={cancellingId === evt.id}
-                            className="px-2 py-0.5 rounded text-[10px] bg-rose-600/30 hover:bg-rose-600/50 text-rose-200 border border-rose-500/30 transition-all"
+                            className="px-2 py-0.5 rounded text-[10px] bg-rose-600/30 hover:bg-rose-600/50 text-rose-200 border border-rose-500/30 transition-all cursor-pointer"
                           >
                             {cancellingId === evt.id ? '...' : 'Cancel'}
                           </button>
@@ -473,6 +718,45 @@ export const CalendarMonitor: React.FC<CalendarMonitorProps> = ({
                 ))
               )}
             </div>
+
+            {/* Quick-Jump to Upcoming Appointments */}
+            {upcomingEvents.length > 0 && (
+              <div className="pt-3 border-t border-white/10 space-y-2">
+                <div className="text-[11px] font-bold text-slate-300 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <i className="fa-solid fa-clock-rotate-left text-purple-400" />
+                    Upcoming Bookings ({upcomingEvents.length})
+                  </span>
+                  <span className="text-[10px] text-slate-500">Jump to date:</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {upcomingEvents.slice(0, 4).map(evt => {
+                    const evtD = new Date(evt.start_time);
+                    const dayNum = evtD.getDate();
+                    const isSelected = selectedDate === dayNum && currentMonth === evtD.getMonth() && currentYear === evtD.getFullYear();
+                    return (
+                      <button
+                        key={evt.id}
+                        onClick={() => {
+                          setViewDate(evtD);
+                          setSelectedDate(dayNum);
+                        }}
+                        className={`px-2 py-1 rounded-lg text-[10px] font-semibold flex items-center gap-1 transition-all border cursor-pointer ${
+                          isSelected
+                            ? 'bg-indigo-600 text-white border-indigo-400 shadow-md'
+                            : 'bg-slate-900/80 hover:bg-slate-800 text-purple-200 border-purple-500/30 hover:border-purple-400'
+                        }`}
+                        title={`${evt.title} - ${evtD.toLocaleDateString()}`}
+                      >
+                        <span>{evtD.toLocaleDateString('default', { month: 'short', day: 'numeric' })}</span>
+                        <span className="opacity-60">&bull;</span>
+                        <span className="truncate max-w-[90px]">{evt.attendee_name || evt.title}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Slot Availability Checker Widget */}
@@ -544,6 +828,17 @@ export const CalendarMonitor: React.FC<CalendarMonitorProps> = ({
             <i className="fa-solid fa-wand-magic-sparkles text-purple-400" />
             All Calendar Appointments ({filteredEvents.length})
           </h3>
+          {onDeleteAllEvents && events.length > 0 && (
+            <button
+              onClick={handleClearAll}
+              disabled={isClearing}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-xs font-semibold transition-all disabled:opacity-50"
+              title="Delete all calendar appointments"
+            >
+              <i className={`fa-solid ${isClearing ? 'fa-spinner fa-spin' : 'fa-trash-can'}`} />
+              {isClearing ? 'Clearing...' : 'Clear All Appointments'}
+            </button>
+          )}
         </div>
 
         <div className="overflow-x-auto">
@@ -569,8 +864,21 @@ export const CalendarMonitor: React.FC<CalendarMonitorProps> = ({
                 filteredEvents.map((evt) => (
                   <tr key={evt.id} className="hover:bg-white/[0.02] transition-colors">
                     <td className="px-6 py-4">
-                      <div className="font-bold text-slate-100 text-sm">{evt.title}</div>
-                      <div className="text-slate-400 text-[11px] mt-0.5">{evt.description || 'Scheduled via AI Assistant'}</div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-slate-100 text-sm">{evt.title}</span>
+                        {evt.business_id === 'biz-cake-01' || evt.title.toLowerCase().includes('cake') ? (
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-pink-500/20 text-pink-300 border border-pink-500/30">
+                            🎂 Cake Order
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                            📦 Logistics Pickup
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-slate-400 text-[11px] mt-1 bg-slate-900/50 p-1.5 rounded-lg border border-white/5 font-sans leading-relaxed">
+                        {evt.description || 'Scheduled via AI Assistant'}
+                      </div>
                     </td>
 
                     <td className="px-6 py-4">
@@ -601,25 +909,41 @@ export const CalendarMonitor: React.FC<CalendarMonitorProps> = ({
                       </span>
                     </td>
 
-                    <td className="px-6 py-4 text-right space-x-2">
-                      <button
-                        onClick={() => openEditModal(evt)}
-                        className="px-3 py-1.5 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/30 text-xs font-bold transition-all"
-                      >
-                        Edit
-                      </button>
-
-                      {evt.status !== 'Cancelled' && onCancelEvent ? (
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex items-center justify-end gap-2">
                         <button
-                          onClick={() => handleCancel(evt.id)}
-                          disabled={cancellingId === evt.id}
-                          className="px-3 py-1.5 rounded-lg bg-rose-600/30 hover:bg-rose-600/50 text-rose-200 border border-rose-500/30 text-xs font-bold transition-all"
+                          onClick={() => openEditModal(evt)}
+                          className="px-3 py-1.5 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/30 text-xs font-bold transition-all"
                         >
-                          {cancellingId === evt.id ? 'Cancelling...' : 'Cancel'}
+                          Edit
                         </button>
-                      ) : (
-                        <span className="text-[11px] text-slate-500 italic">Cancelled</span>
-                      )}
+
+                        {evt.status !== 'Cancelled' && onCancelEvent ? (
+                          <button
+                            onClick={() => handleCancel(evt.id)}
+                            disabled={cancellingId === evt.id}
+                            className="px-3 py-1.5 rounded-lg bg-amber-600/20 hover:bg-amber-600/40 text-amber-200 border border-amber-500/30 text-xs font-bold transition-all"
+                            title="Cancel appointment"
+                          >
+                            {cancellingId === evt.id ? 'Cancelling...' : 'Cancel'}
+                          </button>
+                        ) : (
+                          <span className="text-[11px] text-slate-500 italic px-1">Cancelled</span>
+                        )}
+
+                        <button
+                          onClick={() => handleDelete(evt.id, evt.title)}
+                          disabled={deletingId === evt.id}
+                          className="flex items-center justify-center p-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/30 text-rose-400 hover:text-rose-200 border border-rose-500/20 hover:border-rose-500/40 text-xs transition-all disabled:opacity-50"
+                          title="Permanently delete appointment"
+                        >
+                          {deletingId === evt.id ? (
+                            <i className="fa-solid fa-spinner animate-spin text-xs" />
+                          ) : (
+                            <i className="fa-solid fa-trash-can text-xs" />
+                          )}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -631,9 +955,19 @@ export const CalendarMonitor: React.FC<CalendarMonitorProps> = ({
 
       {/* Mobile Calendar Events Card List (Visible on mobile < md) */}
       <div className="block md:hidden space-y-3">
-        <h3 className="text-sm font-bold text-white px-1 flex items-center justify-between">
-          <span>All Appointments ({filteredEvents.length})</span>
-        </h3>
+        <div className="px-1 flex items-center justify-between">
+          <h3 className="text-sm font-bold text-white">All Appointments ({filteredEvents.length})</h3>
+          {onDeleteAllEvents && events.length > 0 && (
+            <button
+              onClick={handleClearAll}
+              disabled={isClearing}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-xs font-semibold"
+            >
+              <i className={`fa-solid ${isClearing ? 'fa-spinner fa-spin' : 'fa-trash-can'}`} />
+              {isClearing ? 'Clearing...' : 'Clear All'}
+            </button>
+          )}
+        </div>
 
         {filteredEvents.length === 0 ? (
           <div className="glass-panel p-6 text-center text-slate-500 text-xs">
@@ -675,11 +1009,23 @@ export const CalendarMonitor: React.FC<CalendarMonitorProps> = ({
                   <button
                     onClick={() => handleCancel(evt.id)}
                     disabled={cancellingId === evt.id}
-                    className="px-3 py-1 rounded-lg bg-rose-600/30 text-rose-200 border border-rose-500/30 text-xs font-semibold"
+                    className="px-3 py-1 rounded-lg bg-amber-600/20 text-amber-200 border border-amber-500/30 text-xs font-semibold"
                   >
                     {cancellingId === evt.id ? '...' : 'Cancel'}
                   </button>
                 )}
+                <button
+                  onClick={() => handleDelete(evt.id, evt.title)}
+                  disabled={deletingId === evt.id}
+                  className="p-1.5 rounded-lg bg-rose-500/10 text-rose-400 border border-rose-500/20 text-xs"
+                  title="Delete"
+                >
+                  {deletingId === evt.id ? (
+                    <i className="fa-solid fa-spinner animate-spin" />
+                  ) : (
+                    <i className="fa-solid fa-trash-can" />
+                  )}
+                </button>
               </div>
             </div>
           ))
@@ -923,22 +1269,38 @@ export const CalendarMonitor: React.FC<CalendarMonitorProps> = ({
                 />
               </div>
 
-              <div className="pt-2 flex items-center justify-end gap-3 border-t border-white/10">
+              <div className="pt-2 flex items-center justify-between gap-3 border-t border-white/10">
                 <button
                   type="button"
-                  onClick={() => setEditingEvent(null)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold"
+                  onClick={() => {
+                    const id = editingEvent.id;
+                    const t = editingEvent.title;
+                    handleDelete(id, t);
+                  }}
+                  disabled={deletingId === editingEvent.id}
+                  className="px-3.5 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-xs font-semibold flex items-center gap-1.5 transition-all"
                 >
-                  Cancel
+                  <i className={`fa-solid ${deletingId === editingEvent.id ? 'fa-spinner fa-spin' : 'fa-trash-can'}`} />
+                  Delete Appointment
                 </button>
-                <button
-                  type="submit"
-                  disabled={isSubmittingEdit}
-                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold transition-all shadow-lg shadow-indigo-600/30 flex items-center gap-2"
-                >
-                  {isSubmittingEdit ? <i className="fa-solid fa-spinner animate-spin" /> : <i className="fa-solid fa-floppy-disk" />}
-                  {isSubmittingEdit ? 'Saving...' : 'Save Changes'}
-                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingEvent(null)}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingEdit}
+                    className="px-5 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold transition-all shadow-lg shadow-indigo-600/30 flex items-center gap-2"
+                  >
+                    {isSubmittingEdit ? <i className="fa-solid fa-spinner animate-spin" /> : <i className="fa-solid fa-floppy-disk" />}
+                    {isSubmittingEdit ? 'Saving...' : 'Save Changes'}
+                  </button>
+                </div>
               </div>
             </form>
           </div>

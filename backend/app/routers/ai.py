@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from app.models import ChatRequest, TTSRequest
 from app.services.ai_service import AiService
 from app.services.voice_service import VoiceService
@@ -22,10 +22,11 @@ def text_to_speech(data: TTSRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/stt")
-async def speech_to_text(audio: UploadFile = File(...)):
+async def speech_to_text(audio: UploadFile = File(...), language: str = Form("auto")):
     try:
         content = await audio.read()
-        res = VoiceService.speech_to_text(content, audio.content_type)
+        language_hint = language if language in {"en", "hi", "kn"} else "auto"
+        res = VoiceService.speech_to_text(content, audio.content_type, language_hint, audio.filename)
         return {"success": True, "data": res}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

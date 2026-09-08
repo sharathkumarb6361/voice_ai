@@ -105,3 +105,16 @@ h1, h2, h3, h4, h5, h6 {
 ::-webkit-scrollbar-thumb:hover {
   background: #475569;
 }
+
+/* Mobile Safe Area and Touch Optimizations */
+.pb-safe {
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 1rem);
+}
+
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}

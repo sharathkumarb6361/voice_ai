@@ -66,6 +66,34 @@ export async function updateRecordStatus(id: string, status: string): Promise<Mi
   return json.data;
 }
 
+export async function deleteRecord(id: string): Promise<boolean> {
+  const res = await fetch(`${API_BASE}/records/${id}`, {
+    method: 'DELETE'
+  });
+  const json = await res.json();
+  if (!json.success) throw new Error(json.error || json.detail || 'Failed to delete record');
+  return true;
+}
+
+export async function deleteAllRecords(businessId?: string): Promise<boolean> {
+  const url = businessId ? `${API_BASE}/records?business_id=${businessId}` : `${API_BASE}/records`;
+  const res = await fetch(url, {
+    method: 'DELETE'
+  });
+  const json = await res.json();
+  if (!json.success) throw new Error(json.error || json.detail || 'Failed to clear records');
+  return true;
+}
+
+export async function regenerateRecordSummary(id: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/records/${id}/regenerate-summary`, {
+    method: 'POST'
+  });
+  const json = await res.json();
+  if (!json.success) throw new Error(json.error || json.detail || 'Failed to regenerate summary');
+  return json.ai_summary;
+}
+
 export async function sendChatMessage(payload: {
   business_id: string;
   workflow_id: string;
@@ -149,6 +177,25 @@ export async function cancelCalendarEvent(eventId: string): Promise<any> {
   return json.data;
 }
 
+export async function deleteCalendarEvent(eventId: string): Promise<boolean> {
+  const res = await fetch(`${API_BASE}/tools/calendar/events/${eventId}`, {
+    method: 'DELETE'
+  });
+  const json = await res.json();
+  if (!json.success) throw new Error(json.error || json.detail || 'Failed to delete calendar appointment');
+  return true;
+}
+
+export async function deleteAllCalendarEvents(businessId?: string): Promise<boolean> {
+  const url = businessId ? `${API_BASE}/tools/calendar/events?business_id=${businessId}` : `${API_BASE}/tools/calendar/events`;
+  const res = await fetch(url, {
+    method: 'DELETE'
+  });
+  const json = await res.json();
+  if (!json.success) throw new Error(json.error || json.detail || 'Failed to clear calendar appointments');
+  return true;
+}
+
 export async function generateTTS(text: string, language: string = 'en') {
   const res = await fetch(`${API_BASE}/ai/tts`, {
     method: 'POST',
@@ -158,3 +205,41 @@ export async function generateTTS(text: string, language: string = 'en') {
   const json = await res.json();
   return json.data;
 }
+
+export async function transcribeAudio(audioBlob: Blob, language: string = 'auto') {
+  const formData = new FormData();
+  formData.append('audio', audioBlob, 'recording.webm');
+  formData.append('language', language);
+  const res = await fetch(`${API_BASE}/ai/stt`, {
+    method: 'POST',
+    body: formData
+  });
+  const json = await res.json();
+  if (!json.success) throw new Error(json.error || json.detail || 'STT transcription failed');
+  return json.data;
+}
+
+export async function triggerDeliveryMissedCall(callerName: string, callerPhone: string, language: string = 'en') {
+  const res = await fetch(`${API_BASE}/webhooks/delivery/missed-call`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ caller_name: callerName, caller_phone: callerPhone, language })
+  });
+  const json = await res.json();
+  if (!json.success) throw new Error(json.error || json.detail || 'Failed to trigger missed call callback');
+  return json.data;
+}
+
+export async function triggerCakeMissedCall(callerName: string, callerPhone: string, language: string = 'en') {
+  const res = await fetch(`${API_BASE}/webhooks/cake/missed-call`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ caller_name: callerName, caller_phone: callerPhone, language })
+  });
+  const json = await res.json();
+  if (!json.success) throw new Error(json.error || json.detail || 'Failed to trigger cake missed call callback');
+  return json.data;
+}
+
+
+

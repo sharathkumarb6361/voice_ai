@@ -48,8 +48,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   };
 
   return (
-    <header className="sticky top-0 z-50 glass-panel border-b border-slate-800 px-4 sm:px-6 lg:px-8 py-3 mb-6 shadow-xl">
-      <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
+    <>
+      <header className="sticky top-0 z-50 glass-panel border-b border-slate-800 px-4 sm:px-6 lg:px-8 py-3 mb-6 shadow-xl">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
         {/* Brand Logo */}
         <div className="flex items-center gap-3 cursor-pointer group" onClick={() => handleTabClick('dashboard')}>
           <Logo size="md" />
@@ -86,7 +87,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         </nav>
 
         {/* Right Desktop Section */}
-        <div className="hidden md:flex items-center gap-2 flex-shrink-0">
+        <div className="hidden lg:flex items-center gap-2 flex-shrink-0">
           {/* Business Owner Session Badge */}
           <button
             onClick={() => setShowLoginModal(true)}
@@ -131,15 +132,18 @@ export const Navbar: React.FC<NavbarProps> = ({
           )}
         </div>
 
-        {/* Mobile Hamburger Toggle Button */}
-        <div className="flex items-center gap-2 md:hidden">
+        {/* Mobile Header Action Buttons */}
+        <div className="flex items-center gap-2 lg:hidden">
+          {/* Mobile Owner Icon */}
           <button
             onClick={() => setShowLoginModal(true)}
             className="p-2 rounded-xl bg-slate-900 text-indigo-300 border border-slate-700 text-xs font-bold"
+            title="Switch Business Profile"
           >
             <i className="fa-solid fa-user-gear text-sm" />
           </button>
 
+          {/* Mobile Menu Toggle */}
           <button
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
             className="p-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-200 hover:text-white text-lg focus:outline-none"
@@ -152,7 +156,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Mobile Slide-down Menu Drawer */}
       {mobileMenuOpen && (
-        <div className="md:hidden mt-3 pt-3 border-t border-indigo-500/20 space-y-3 animate-fade-in max-h-[75vh] overflow-y-auto touch-scroll pr-1">
+        <div className="lg:hidden mt-3 pt-3 border-t border-indigo-500/20 space-y-3 animate-fade-in max-h-[75vh] overflow-y-auto touch-scroll pr-1">
           <nav className="grid grid-cols-1 gap-2">
             {tabs.map((tab) => {
               const isActive = activeTab === tab.id;
@@ -327,5 +331,35 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
       )}
     </header>
+
+    {/* Native-Like Floating Bottom Navigation Dock for Mobile & Tablets (< lg) */}
+    <nav className="fixed bottom-2 inset-x-2 sm:inset-x-6 z-40 lg:hidden bg-slate-950/95 backdrop-blur-xl border border-indigo-500/30 rounded-2xl shadow-2xl px-1.5 py-1 flex items-center justify-around pb-safe">
+      {tabs.map((tab) => {
+        const isActive = activeTab === tab.id;
+        const shortLabel = tab.id === 'dashboard' ? 'Records'
+          : tab.id === 'builder' ? 'Workflows'
+          : tab.id === 'simulator' ? 'Simulator'
+          : tab.id === 'profiles' ? 'Profiles'
+          : 'Calendar';
+
+        return (
+          <button
+            key={tab.id}
+            onClick={() => handleTabClick(tab.id)}
+            className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition-all duration-200 flex-1 min-w-0 ${
+              isActive
+                ? 'text-white bg-indigo-600/30 border border-indigo-500/40 shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <i className={`${tab.iconClass} text-sm mb-0.5 ${isActive ? 'text-indigo-300 scale-110' : 'text-slate-400'}`} />
+            <span className={`text-[10px] truncate max-w-full font-semibold ${isActive ? 'font-bold text-white' : 'text-slate-400'}`}>
+              {shortLabel}
+            </span>
+          </button>
+        );
+      })}
+    </nav>
+  </>
   );
 };

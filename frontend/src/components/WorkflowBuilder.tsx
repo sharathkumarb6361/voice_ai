@@ -10,22 +10,22 @@ interface WorkflowBuilderProps {
 
 const CAKE_SHOP_PRESETS: WorkflowField[] = [
   { key: 'order_type', label: 'Order Type', type: 'select', options: ['New Cake Order', 'General Enquiry', 'Custom Design'], required: true, description: 'Order or general enquiry classification' },
-  { key: 'cake_type', label: 'Cake Type / Occasion', type: 'select', options: ['Birthday Cake', 'Anniversary Cake', 'Tier Wedding Cake', 'Theme Custom Cake', 'Pastry Box'], required: true, description: 'Type or occasion for the cake' },
+  { key: 'cake_type', label: 'Cake Type / Occasion', type: 'select', options: ['Birthday Cake', 'Anniversary Cake', 'Tier Wedding Cake', 'Theme Custom Cake', 'Pastry Box'], required: false, description: 'Type or occasion for the cake' },
   { key: 'cake_flavor', label: 'Cake Flavor', type: 'text', required: true, description: 'e.g. Belgian Dark Chocolate, Red Velvet, Vanilla Mango' },
   { key: 'weight_kg', label: 'Weight (in kg)', type: 'number', required: true, description: 'e.g. 1, 2, 5' },
   { key: 'required_date', label: 'Required Date & Time', type: 'datetime', required: true, description: 'Pickup or delivery target datetime' },
-  { key: 'custom_message', label: 'Message on Cake', type: 'text', required: false, description: 'e.g. Happy Birthday Rahul!' },
+  { key: 'custom_message', label: 'Message on Cake', type: 'text', required: true, description: 'e.g. Happy Birthday Rahul!' },
   { key: 'delivery_preference', label: 'Delivery or Pickup', type: 'select', options: ['Home Delivery', 'Store Pickup'], required: true, description: 'Customer preference for fulfillment' },
-  { key: 'budget_inr', label: 'Budget (INR)', type: 'number', required: false, description: 'e.g. 1500' }
+  { key: 'budget_inr', label: 'Budget (INR)', type: 'number', required: true, description: 'e.g. 1500' }
 ];
 
 const LOGISTICS_PRESETS: WorkflowField[] = [
   { key: 'service_option', label: 'Service Option', type: 'select', options: ['New Delivery Request', 'Package Status Update', 'Help with Existing Delivery'], required: true, description: 'Logistics service request type' },
-  { key: 'pickup_location', label: 'Pickup Location', type: 'text', required: false, description: 'e.g. Indiranagar, Bengaluru' },
-  { key: 'delivery_location', label: 'Delivery Location', type: 'text', required: false, description: 'e.g. Whitefield, Bengaluru' },
-  { key: 'package_type', label: 'Package Type', type: 'select', options: ['Documents & Files', 'Electronics', 'Parcels & Boxes', 'Furniture & Heavy', 'Fragile Item'], required: false, description: 'Type of cargo parcel' },
-  { key: 'preferred_time', label: 'Preferred Pickup Time', type: 'datetime', required: false, description: 'Requested pickup time slot' },
-  { key: 'tracking_number', label: 'Waybill / Tracking Number', type: 'text', required: false, description: 'e.g. TRK-9821-IN' }
+  { key: 'pickup_location', label: 'Pickup Location', type: 'text', required: true, description: 'e.g. Indiranagar, Bengaluru' },
+  { key: 'delivery_location', label: 'Delivery Location', type: 'text', required: true, description: 'e.g. Whitefield, Bengaluru' },
+  { key: 'package_type', label: 'Package Type', type: 'select', options: ['Documents & Files', 'Electronics', 'Parcels & Boxes', 'Furniture & Heavy', 'Fragile Item'], required: true, description: 'Type of cargo parcel' },
+  { key: 'preferred_time', label: 'Preferred Pickup Time', type: 'datetime', required: true, description: 'Requested pickup time slot' },
+  { key: 'tracking_number', label: 'Waybill / Tracking Number', type: 'text', required: true, description: 'e.g. TRK-9821-IN' }
 ];
 
 export const WorkflowBuilder: React.FC<WorkflowBuilderProps> = ({
@@ -169,7 +169,7 @@ export const WorkflowBuilder: React.FC<WorkflowBuilderProps> = ({
         key: `custom_field_${newIndex}`,
         label: `Custom Field ${newIndex}`,
         type: 'text',
-        required: false,
+        required: true,
         description: 'Customer input detail'
       }
     ]);

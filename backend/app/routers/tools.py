@@ -61,10 +61,17 @@ def cancel_event_post(data: dict):
     res = CalendarService.cancel_event(event_id, business_id)
     return {"success": True, "data": res}
 
+@router.delete("/calendar/events")
+def delete_all_calendar_events(business_id: Optional[str] = Query(None)):
+    res = CalendarService.delete_all_events(business_id=business_id)
+    return {"success": True, "message": res.get("message")}
+
 @router.delete("/calendar/events/{event_id}")
-def cancel_event_by_id(event_id: str):
-    res = CalendarService.cancel_event(event_id)
-    return {"success": True, "data": res}
+def delete_event_by_id(event_id: str):
+    res = CalendarService.delete_event(event_id)
+    if not res.get("success"):
+        raise HTTPException(status_code=404, detail=res.get("message"))
+    return {"success": True, "message": res.get("message")}
 
 @router.post("/calendar/sync")
 def sync_google_calendar():

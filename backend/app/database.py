@@ -6,37 +6,47 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Database Connection URI
-DB_URL = os.getenv("DATABASE_URL")
-
-if DB_URL:
-    if DB_URL.startswith("prisma+postgres://"):
-        DB_URL = DB_URL.replace("prisma+postgres://", "postgresql+pg8000://", 1)
-    elif DB_URL.startswith("postgres://"):
-        DB_URL = DB_URL.replace("postgres://", "postgresql+pg8000://", 1)
-    elif DB_URL.startswith("postgresql://") and "pg8000" not in DB_URL:
-        DB_URL = DB_URL.replace("postgresql://", "postgresql+pg8000://", 1)
-    
-    if "?" in DB_URL:
-        base_url, query_str = DB_URL.split("?", 1)
-        params = [p for p in query_str.split("&") if p and not p.startswith("api_key=") and not p.startswith("sslmode=")]
-        DB_URL = f"{base_url}?{'&'.join(params)}" if params else base_url
-else:
+def _local_sqlite_path():
     is_serverless = os.getenv("AWS_LAMBDA_FUNCTION_NAME")
     if is_serverless:
-        db_file = "/tmp/assistant.db"
-    else:
-        try:
-            data_dir = os.path.join(os.path.dirname(__file__), "../data")
-            os.makedirs(data_dir, exist_ok=True)
-            db_file = os.path.join(data_dir, "assistant.db")
-        except Exception:
-            db_file = "/tmp/assistant.db"
-    DB_URL = f"sqlite:///{db_file}"
+        return "/tmp/assistant.db"
+    try:
+        data_dir = os.path.join(os.path.dirname(__file__), "../data")
+        os.makedirs(data_dir, exist_ok=True)
+        return os.path.join(data_dir, "assistant.db")
+    except Exception:
+        return "/tmp/assistant.db"
+
+def _normalize_database_url(raw_url: str | None) -> str:
+    value = (raw_url or "").strip()
+    placeholder = (
+        not value
+        or "your_" in value.lower()
+        or "postgres:password@localhost" in value
+        or value.endswith("/voice_ai_assistant") and "localhost" in value
+    )
+    if placeholder:
+        return f"sqlite:///{_local_sqlite_path()}"
+
+    if value.startswith("prisma+postgres://"):
+        value = value.replace("prisma+postgres://", "postgresql+pg8000://", 1)
+    elif value.startswith("postgres://"):
+        value = value.replace("postgres://", "postgresql+pg8000://", 1)
+    elif value.startswith("postgresql://") and "pg8000" not in value:
+        value = value.replace("postgresql://", "postgresql+pg8000://", 1)
+
+    if "?" in value:
+        base_url, query_str = value.split("?", 1)
+        params = [p for p in query_str.split("&") if p and not p.startswith("api_key=") and not p.startswith("sslmode=")]
+        value = f"{base_url}?{'&'.join(params)}" if params else base_url
+    return value
+
+# Database Connection URI — local SQLite unless a real remote DATABASE_URL is set
+DB_URL = _normalize_database_url(os.getenv("DATABASE_URL"))
 
 print(f"[Database Engine] Connecting to: {DB_URL.split('@')[-1] if '@' in DB_URL else DB_URL}")
 
-fallback_db_file = "/tmp/assistant.db" if os.getenv("AWS_LAMBDA_FUNCTION_NAME") else os.path.join(os.path.dirname(__file__), "../data/assistant.db")
+fallback_db_file = _local_sqlite_path()
 fallback_engine = create_engine(f"sqlite:///{fallback_db_file}", connect_args={"check_same_thread": False})
 
 try:
@@ -44,9 +54,12 @@ try:
         primary_engine = create_engine(DB_URL, connect_args={"check_same_thread": False})
     else:
         primary_engine = create_engine(DB_URL, pool_pre_ping=True)
+        with primary_engine.connect() as probe:
+            probe.execute(text("SELECT 1"))
 except Exception as e:
-    print(f"[Database Warning] Primary DB engine creation failed: {e}. Falling back to SQLite.")
+    print(f"[Database Warning] Primary DB engine unavailable ({e}). Falling back to SQLite.")
     primary_engine = fallback_engine
+    DB_URL = f"sqlite:///{fallback_db_file}"
 
 engine = primary_engine
 
@@ -75,7 +88,7 @@ def init_sqlite_fallback():
                     owner_name VARCHAR(255) NOT NULL,
                     phone VARCHAR(64) NOT NULL,
                     email VARCHAR(255) NOT NULL,
-                    address TEXT,
+                    address TEXT NOT NULL DEFAULT '',
                     created_at VARCHAR(64) NOT NULL
                 );
             """))
@@ -92,7 +105,7 @@ def init_sqlite_fallback():
                     actions TEXT NOT NULL,
                     closing_message TEXT NOT NULL,
                     language VARCHAR(32) NOT NULL DEFAULT 'en-hi',
-                    business_hours TEXT,
+                    business_hours TEXT NOT NULL DEFAULT '',
                     is_active INT NOT NULL DEFAULT 1,
                     created_at VARCHAR(64) NOT NULL
                 );
@@ -123,9 +136,9 @@ def init_sqlite_fallback():
                     end_time VARCHAR(64) NOT NULL,
                     attendee_name VARCHAR(255) NOT NULL,
                     attendee_phone VARCHAR(64) NOT NULL,
-                    description TEXT,
+                    description TEXT NOT NULL DEFAULT '',
                     status VARCHAR(32) NOT NULL DEFAULT 'Confirmed',
-                    google_event_id VARCHAR(128),
+                    google_event_id VARCHAR(128) NOT NULL DEFAULT '',
                     created_at VARCHAR(64) NOT NULL
                 );
             """))
@@ -134,6 +147,7 @@ def init_sqlite_fallback():
         pass
 
 def init_db():
+    global engine, primary_engine
     try:
         with engine.begin() as conn:
             conn.execute(text("""
@@ -144,7 +158,7 @@ def init_db():
                     owner_name VARCHAR(255) NOT NULL,
                     phone VARCHAR(64) NOT NULL,
                     email VARCHAR(255) NOT NULL,
-                    address TEXT,
+                    address TEXT NOT NULL DEFAULT '',
                     created_at VARCHAR(64) NOT NULL
                 );
             """))
@@ -162,14 +176,14 @@ def init_db():
                     actions TEXT NOT NULL,
                     closing_message TEXT NOT NULL,
                     language VARCHAR(32) NOT NULL DEFAULT 'en-hi',
-                    business_hours TEXT,
+                    business_hours TEXT NOT NULL DEFAULT '',
                     is_active INT NOT NULL DEFAULT 1,
                     created_at VARCHAR(64) NOT NULL
                 );
             """))
 
             try:
-                conn.execute(text("ALTER TABLE workflows ADD COLUMN business_hours TEXT"))
+                conn.execute(text("ALTER TABLE workflows ADD COLUMN business_hours TEXT NOT NULL DEFAULT ''"))
             except Exception:
                 pass
 
@@ -200,158 +214,124 @@ def init_db():
                     end_time VARCHAR(64) NOT NULL,
                     attendee_name VARCHAR(255) NOT NULL,
                     attendee_phone VARCHAR(64) NOT NULL,
-                    description TEXT,
+                    description TEXT NOT NULL DEFAULT '',
                     status VARCHAR(32) NOT NULL DEFAULT 'Confirmed',
-                    google_event_id VARCHAR(128),
+                    google_event_id VARCHAR(128) NOT NULL DEFAULT '',
                     created_at VARCHAR(64) NOT NULL
                 );
             """))
 
             seed_default_data(conn)
     except Exception as e:
-        print(f"[Database Warning] Database initialization deferred/failed: {e}")
+        print(f"[Database Warning] Primary database initialization failed: {e}. Seeding SQLite fallback.")
+        primary_engine = fallback_engine
+        engine = fallback_engine
+        init_sqlite_fallback()
+
+DEFAULT_BUSINESS_HOURS = {
+    "enabled": True,
+    "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+    "start_time": "09:00",
+    "end_time": "18:00",
+    "after_hours_greeting": "We are currently closed for the day. Our business operating hours are Mon-Sat 9 AM to 6 PM. We have logged your request and will follow up tomorrow morning.",
+    "after_hours_action": "flag_after_hours"
+}
+
+def cake_shop_workflow_spec(business_name: str = "Sweet Treats Bakery"):
+    return {
+        "name": "Missed Call Cake Order & Enquiry",
+        "industry": "Cake Shop",
+        "trigger_event": "Missed Call",
+        "greeting": f"Namaste! Thank you for calling {business_name}. We missed your call. Are you looking to order a cake or do you have a general enquiry?",
+        "fields": [
+            {"key": "order_type", "label": "Order Type", "type": "select", "options": ["New Cake Order", "General Enquiry", "Custom Design"], "required": True},
+            {"key": "cake_type", "label": "Cake Type / Occasion", "type": "select", "options": ["Birthday Cake", "Anniversary Cake", "Tier Wedding Cake", "Theme Custom Cake", "Pastry Box"], "required": False},
+            {"key": "cake_flavor", "label": "Cake Flavor", "type": "text", "required": True, "description": "e.g. Belgian Dark Chocolate, Red Velvet, Vanilla Mango"},
+            {"key": "weight_kg", "label": "Weight (in kg)", "type": "number", "required": True, "description": "e.g. 1, 2, 5"},
+            {"key": "required_date", "label": "Required Date & Time", "type": "datetime", "required": True},
+            {"key": "custom_message", "label": "Message on Cake", "type": "text", "required": True, "description": "Custom inscription or message on cake"},
+            {"key": "delivery_preference", "label": "Delivery or Pickup", "type": "select", "options": ["Home Delivery", "Store Pickup"], "required": True},
+            {"key": "budget_inr", "label": "Budget (INR)", "type": "number", "required": True, "description": "Estimated budget in INR"}
+        ],
+        "conditions": [
+            {"field": "required_date", "operator": "within_hours", "value": 24, "action_override": "mark_urgent", "note": "Mark urgent if required within 24 hours"}
+        ],
+        "actions": ["create_order_enquiry", "send_owner_summary_alert", "create_calendar_event"],
+        "closing_message": "Thank you! Your cake order enquiry details have been recorded. Our head baker will contact you shortly to confirm design and pricing.",
+        "language": "en-hi",
+    }
+
+def logistics_workflow_spec(business_name: str = "SwiftMove Express"):
+    return {
+        "name": "Missed Call Delivery & Logistics Assistant",
+        "industry": "Logistics & Delivery",
+        "trigger_event": "Missed Call",
+        "greeting": f"Hi, this is the delivery assistant calling you back regarding your missed call. Are you looking to create a new delivery, check the status of an existing delivery, or get help with an existing delivery?",
+        "fields": [
+            {"key": "intent", "label": "Request Type", "type": "select", "options": ["NEW_DELIVERY", "STATUS_UPDATE", "EXISTING_DELIVERY_HELP"], "required": True, "description": "New Delivery, Status Update, or Existing Help"},
+            {"key": "pickup_location", "label": "Pickup Location", "type": "text", "required": True, "description": "Package pickup address/hub"},
+            {"key": "delivery_location", "label": "Delivery Location", "type": "text", "required": True, "description": "Destination address"},
+            {"key": "package_type", "label": "Package Type", "type": "select", "options": ["documents", "small package", "electronics", "fragile item", "furniture or heavy item", "parcel"], "required": True},
+            {"key": "preferred_time", "label": "Preferred Pickup Time", "type": "text", "required": True, "description": "e.g. Tomorrow 10 AM, Today evening"},
+            {"key": "contact_details", "label": "Contact Number", "type": "text", "required": True, "description": "Driver dispatch phone number"},
+            {"key": "tracking_number", "label": "Tracking / Order Number", "type": "text", "required": False, "description": "e.g. TRK-9821-IN, ORD-5544"},
+            {"key": "issue_description", "label": "Issue / Help Description", "type": "text", "required": False, "description": "Details of delivery problem or delay"}
+        ],
+        "conditions": [
+            {"field": "intent", "operator": "equals", "value": "NEW_DELIVERY", "tool_action": "create_delivery_request", "note": "Creates a new delivery pickup task"},
+            {"field": "tracking_number", "operator": "exists", "tool_action": "track_delivery_status", "note": "Queries live parcel location and status"},
+            {"field": "intent", "operator": "equals", "value": "EXISTING_DELIVERY_HELP", "tool_action": "create_callback_task", "note": "Creates a dispatch team callback task"}
+        ],
+        "actions": ["create_delivery_request", "track_delivery_status_api", "create_dispatch_callback_task"],
+        "closing_message": "Your delivery request has been processed. Our dispatch team will follow up as scheduled. Thank you for choosing SwiftMove Express, goodbye!",
+        "language": "en-hi",
+    }
+
+def workflow_spec_for_industry(industry: str, business_name: str):
+    if "logistics" in (industry or "").lower() or "delivery" in (industry or "").lower():
+        return logistics_workflow_spec(business_name)
+    return cake_shop_workflow_spec(business_name)
+
+def insert_workflow(conn, workflow_id: str, business_id: str, spec: dict, created_at: str):
+    conn.execute(text("""
+        INSERT INTO workflows (id, business_id, name, industry, trigger_event, greeting, fields, conditions, actions, closing_message, language, business_hours, is_active, created_at)
+        VALUES (:id, :business_id, :name, :industry, :trigger_event, :greeting, :fields, :conditions, :actions, :closing_message, :language, :business_hours, 1, :created_at)
+    """), {
+        "id": workflow_id, "business_id": business_id, "name": spec["name"], "industry": spec["industry"],
+        "trigger_event": spec["trigger_event"], "greeting": spec["greeting"],
+        "fields": json.dumps(spec["fields"]), "conditions": json.dumps(spec["conditions"]), "actions": json.dumps(spec["actions"]),
+        "closing_message": spec["closing_message"], "language": spec["language"],
+        "business_hours": json.dumps(DEFAULT_BUSINESS_HOURS), "created_at": created_at
+    })
+
+def create_industry_workflow(conn, business_id: str, industry: str, business_name: str, workflow_id: str | None = None):
+    spec = workflow_spec_for_industry(industry, business_name)
+    wf_id = workflow_id or f"wf-{business_id.replace('biz-', '')}"
+    now = datetime.now(timezone.utc).isoformat()
+    insert_workflow(conn, wf_id, business_id, spec, now)
+    return wf_id
+
+def _ensure_business_and_workflow(conn, biz_id: str, biz: dict, wf_id: str, spec: dict, created_at: str):
+    if not conn.execute(text("SELECT id FROM businesses WHERE id = :id"), {"id": biz_id}).fetchone():
+        conn.execute(text("""
+            INSERT INTO businesses (id, name, industry, owner_name, phone, email, address, created_at)
+            VALUES (:id, :name, :industry, :owner_name, :phone, :email, :address, :created_at)
+        """), {**biz, "id": biz_id, "created_at": created_at})
+    if not conn.execute(text("SELECT id FROM workflows WHERE id = :id"), {"id": wf_id}).fetchone():
+        insert_workflow(conn, wf_id, biz_id, spec, created_at)
 
 def seed_default_data(conn):
     print("Verifying & seeding target businesses (Cake Shop & Logistics/Delivery)...")
     now = datetime.now(timezone.utc).isoformat()
 
-    # Purge legacy non-target sample businesses if present
-    conn.execute(text("DELETE FROM businesses WHERE id NOT IN ('biz-cake-01', 'biz-logistics-01')"))
-    conn.execute(text("DELETE FROM workflows WHERE business_id NOT IN ('biz-cake-01', 'biz-logistics-01')"))
-    conn.execute(text("DELETE FROM calendar_events WHERE business_id NOT IN ('biz-cake-01', 'biz-logistics-01')"))
-    conn.execute(text("DELETE FROM records WHERE business_id NOT IN ('biz-cake-01', 'biz-logistics-01')"))
+    _ensure_business_and_workflow(conn, "biz-cake-01", {
+        "name": "Sweet Treats Bakery & Confectionery", "industry": "Cake Shop",
+        "owner_name": "Ananya Sharma", "phone": "+91 98765 43210", "email": "orders@sweettreats.com",
+        "address": "MG Road, Indiranagar, Bengaluru"
+    }, "wf-cake-01", cake_shop_workflow_spec("Sweet Treats Bakery"), now)
 
-    # 1. Cake Shop Business
-    cake_biz_id = "biz-cake-01"
-    cake_wf_id = "wf-cake-01"
-    if not conn.execute(text("SELECT id FROM businesses WHERE id = :id"), {"id": cake_biz_id}).fetchone():
-        conn.execute(text("""
-            INSERT INTO businesses (id, name, industry, owner_name, phone, email, address, created_at)
-            VALUES (:id, :name, :industry, :owner_name, :phone, :email, :address, :created_at)
-        """), {
-            "id": cake_biz_id, "name": "Sweet Treats Bakery & Confectionery", "industry": "Cake Shop",
-            "owner_name": "Ananya Sharma", "phone": "+91 98765 43210", "email": "orders@sweettreats.com",
-            "address": "MG Road, Indiranagar, Bengaluru", "created_at": now
-        })
-        cake_fields = [
-            {"key": "order_type", "label": "Order Type", "type": "select", "options": ["New Cake Order", "General Enquiry", "Custom Design"], "required": True},
-            {"key": "cake_type", "label": "Cake Type / Occasion", "type": "select", "options": ["Birthday Cake", "Anniversary Cake", "Tier Wedding Cake", "Theme Custom Cake", "Pastry Box"], "required": True},
-            {"key": "cake_flavor", "label": "Cake Flavor", "type": "text", "required": True, "description": "e.g. Belgian Dark Chocolate, Red Velvet, Vanilla Mango"},
-            {"key": "weight_kg", "label": "Weight (in kg)", "type": "number", "required": True, "description": "e.g. 1, 2, 5"},
-            {"key": "required_date", "label": "Required Date & Time", "type": "datetime", "required": True},
-            {"key": "custom_message", "label": "Message on Cake", "type": "text", "required": False},
-            {"key": "delivery_preference", "label": "Delivery or Pickup", "type": "select", "options": ["Home Delivery", "Store Pickup"], "required": True},
-            {"key": "budget_inr", "label": "Budget (INR)", "type": "number", "required": False}
-        ]
-        cake_conditions = [
-            {"field": "required_date", "operator": "within_hours", "value": 24, "action_override": "mark_urgent", "note": "Mark urgent if required within 24 hours"}
-        ]
-        default_bh = json.dumps({
-            "enabled": True,
-            "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
-            "start_time": "09:00",
-            "end_time": "18:00",
-            "after_hours_greeting": "We are currently closed for the day. Our business operating hours are Mon-Sat 9 AM to 6 PM. We have logged your request and will follow up tomorrow morning.",
-            "after_hours_action": "flag_after_hours"
-        })
-        conn.execute(text("""
-            INSERT INTO workflows (id, business_id, name, industry, trigger_event, greeting, fields, conditions, actions, closing_message, language, business_hours, is_active, created_at)
-            VALUES (:id, :business_id, :name, :industry, :trigger_event, :greeting, :fields, :conditions, :actions, :closing_message, :language, :business_hours, 1, :created_at)
-        """), {
-            "id": cake_wf_id, "business_id": cake_biz_id, "name": "Missed Call Cake Order & Enquiry", "industry": "Cake Shop",
-            "trigger_event": "Missed Call", "greeting": "Namaste! Thank you for calling Sweet Treats Bakery. We missed your call. Are you looking to order a cake or do you have a general enquiry?",
-            "fields": json.dumps(cake_fields), "conditions": json.dumps(cake_conditions), "actions": json.dumps(["create_order_enquiry", "send_owner_summary_alert"]),
-            "closing_message": "Thank you! Your cake order enquiry details have been recorded. Our head baker will contact you shortly to confirm design and pricing.",
-            "language": "en-hi", "business_hours": default_bh, "created_at": now
-        })
-
-    # 2. Logistics & Delivery Business
-    logistics_biz_id = "biz-logistics-01"
-    logistics_wf_id = "wf-logistics-01"
-    if not conn.execute(text("SELECT id FROM businesses WHERE id = :id"), {"id": logistics_biz_id}).fetchone():
-        conn.execute(text("""
-            INSERT INTO businesses (id, name, industry, owner_name, phone, email, address, created_at)
-            VALUES (:id, :name, :industry, :owner_name, :phone, :email, :address, :created_at)
-        """), {
-            "id": logistics_biz_id, "name": "SwiftMove Express Logistics & Delivery", "industry": "Logistics & Delivery",
-            "owner_name": "Vikram Singh", "phone": "+91 99887 76655", "email": "support@swiftmove.com",
-            "address": "Electronic City Phase 1, Bengaluru", "created_at": now
-        })
-        logistics_fields = [
-            {"key": "service_option", "label": "Service Option", "type": "select", "options": ["New Delivery Request", "Package Status Update", "Help with Existing Delivery"], "required": True},
-            {"key": "pickup_location", "label": "Pickup Location", "type": "text", "required": False, "description": "e.g. Indiranagar, Bengaluru"},
-            {"key": "delivery_location", "label": "Delivery Location", "type": "text", "required": False, "description": "e.g. Whitefield, Bengaluru"},
-            {"key": "package_type", "label": "Package Type", "type": "select", "options": ["Documents & Files", "Electronics", "Parcels & Boxes", "Furniture & Heavy", "Fragile Item"], "required": False},
-            {"key": "preferred_time", "label": "Preferred Pickup Time", "type": "datetime", "required": False},
-            {"key": "tracking_number", "label": "Waybill / Tracking Number", "type": "text", "required": False, "description": "e.g. TRK-9821-IN"}
-        ]
-        logistics_conditions = [
-            {"field": "service_option", "operator": "equals", "value": "New Delivery Request", "tool_action": "create_delivery_request", "note": "Creates a new delivery pickup task"},
-            {"field": "tracking_number", "operator": "exists", "tool_action": "track_delivery_status", "note": "Queries live parcel location and status"},
-            {"field": "service_option", "operator": "equals", "value": "Help with Existing Delivery", "tool_action": "create_callback_task", "note": "Creates a dispatch team callback task"}
-        ]
-        conn.execute(text("""
-            INSERT INTO workflows (id, business_id, name, industry, trigger_event, greeting, fields, conditions, actions, closing_message, language, business_hours, is_active, created_at)
-            VALUES (:id, :business_id, :name, :industry, :trigger_event, :greeting, :fields, :conditions, :actions, :closing_message, :language, :business_hours, 1, :created_at)
-        """), {
-            "id": logistics_wf_id, "business_id": logistics_biz_id, "name": "Express Delivery Request & Parcel Status Callback", "industry": "Logistics & Delivery",
-            "trigger_event": "Missed Call", "greeting": "Hello! Welcome to SwiftMove Express. We missed your call. Would you like to schedule a new delivery, check a package status update, or get help with an existing delivery?",
-            "fields": json.dumps(logistics_fields), "conditions": json.dumps(logistics_conditions), "actions": json.dumps(["create_delivery_request", "track_delivery_status_api", "create_dispatch_callback_task"]),
-            "closing_message": "Your logistics request has been logged. Our dispatch team will manage your delivery and keep you updated.",
-            "language": "en-hi", "business_hours": default_bh, "created_at": now
-        })
-
-    # Seed Sample Call Records if empty
-    rec_count = conn.execute(text("SELECT COUNT(*) FROM records")).fetchone()[0]
-    if rec_count == 0:
-        conn.execute(text("""
-            INSERT INTO records (id, business_id, workflow_id, caller_name, caller_phone, intent, collected_data, ai_summary, urgency, followup_status, transcript, tools_executed, created_at)
-            VALUES (:id, :business_id, :workflow_id, :caller_name, :caller_phone, :intent, :collected_data, :ai_summary, :urgency, :followup_status, :transcript, :tools_executed, :created_at)
-        """), {
-            "id": "rec-cake-01", "business_id": cake_biz_id, "workflow_id": cake_wf_id,
-            "caller_name": "Rahul Kapur", "caller_phone": "+91 98112 33445", "intent": "New Cake Order - Birthday",
-            "collected_data": json.dumps({
-                "order_type": "New Cake Order", "cake_flavor": "Belgian Dark Chocolate Fudge", "weight_kg": 2,
-                "required_date": (datetime.now() + timedelta(hours=18)).isoformat(), "custom_message": "Happy 30th Birthday Sameer!",
-                "delivery_preference": "Home Delivery", "budget_inr": 2500
-            }),
-            "ai_summary": "Customer wants a 2kg Belgian Dark Chocolate Fudge cake delivered within 18 hours. Custom message requested. Marked URGENT as delivery is required under 24h.",
-            "urgency": "Urgent", "followup_status": "Pending",
-            "transcript": json.dumps([
-                {"role": "assistant", "content": "Namaste! Thank you for calling Sweet Treats Bakery. We missed your call. Would you like to place a new cake order or ask a general enquiry?"},
-                {"role": "user", "content": "Hi! I want to order a birthday cake for tomorrow evening."},
-                {"role": "assistant", "content": "Great! What flavor and weight would you prefer?"},
-                {"role": "user", "content": "Belgian Dark Chocolate Fudge, 2kg. Deliver to HSR layout by 6 PM tomorrow."}
-            ]),
-            "tools_executed": json.dumps([{"tool": "evaluate_urgency_condition", "result": "Urgent flag set (delivery < 24h)"}]),
-            "created_at": (datetime.now() - timedelta(hours=2)).isoformat()
-        })
-
-    # Seed Sample Calendar Events if empty
-    cal_count = conn.execute(text("SELECT COUNT(*) FROM calendar_events")).fetchone()[0]
-    if cal_count == 0:
-        start1 = datetime.now() + timedelta(days=1)
-        start1 = start1.replace(hour=17, minute=0, second=0, microsecond=0)
-        end1 = start1 + timedelta(minutes=30)
-
-        start2 = datetime.now() + timedelta(days=2)
-        start2 = start2.replace(hour=14, minute=0, second=0, microsecond=0)
-        end2 = start2 + timedelta(minutes=30)
-
-        conn.execute(text("""
-            INSERT INTO calendar_events (id, business_id, title, start_time, end_time, attendee_name, attendee_phone, description, status, google_event_id, created_at)
-            VALUES (:id, :bid, :title, :st, :et, :aname, :aphone, :desc, 'Confirmed', :gid, :cat)
-        """), {
-            "id": "cal-seed-01", "bid": cake_biz_id, "title": "Cake Order (Dark Chocolate - 2kg) - Ankit Mehta",
-            "st": start1.isoformat(), "et": end1.isoformat(), "aname": "Ankit Mehta", "aphone": "+91 98765 12345",
-            "desc": "Scheduled via Voice AI Assistant (Sweet Treats Bakery)", "gid": "gcal_py_cal_991823", "cat": now
-        })
-
-        conn.execute(text("""
-            INSERT INTO calendar_events (id, business_id, title, start_time, end_time, attendee_name, attendee_phone, description, status, google_event_id, created_at)
-            VALUES (:id, :bid, :title, :st, :et, :aname, :aphone, :desc, 'Confirmed', :gid, :cat)
-        """), {
-            "id": "cal-seed-02", "bid": logistics_biz_id, "title": "Delivery Pickup (Indiranagar -> Whitefield) - Vikram Singh",
-            "st": start2.isoformat(), "et": end2.isoformat(), "aname": "Vikram Singh", "aphone": "+91 99887 76655",
-            "desc": "Scheduled via Voice AI Assistant (SwiftMove Express)", "gid": "gcal_py_cal_991824", "cat": now
-        })
+    _ensure_business_and_workflow(conn, "biz-logistics-01", {
+        "name": "SwiftMove Express Logistics & Delivery", "industry": "Logistics & Delivery",
+        "owner_name": "Vikram Singh", "phone": "+91 99887 76655", "email": "support@swiftmove.com",
+        "address": "Electronic City Phase 1, Bengaluru"
+    }, "wf-logistics-01", logistics_workflow_spec("SwiftMove Express"), now)

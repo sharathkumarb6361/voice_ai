@@ -44,13 +44,26 @@ class CalendarService:
             return None, None
 
     @staticmethod
-    def parse_datetime_input(date_str: str, time_str: str) -> datetime:
+    def parse_datetime_input(date_str: str, time_str: str = None) -> datetime:
         """Helper to parse varied date and time strings into a Python datetime object."""
         now = datetime.now()
-        date_str_lower = (date_str or "today").strip().lower()
-        time_str_lower = (time_str or "16:00").strip().lower()
+        date_str_clean = (date_str or "today").strip()
+        date_str_lower = date_str_clean.lower()
+        time_str_lower = (time_str or "").strip().lower()
 
-        # Parse Date
+        # 1. Direct ISO format check
+        if "t" in date_str_lower or re.match(r'^\d{4}-\d{2}-\d{2}', date_str_clean):
+            try:
+                iso_clean = date_str_clean.replace("Z", "+00:00")
+                parsed_dt = datetime.fromisoformat(iso_clean)
+                if parsed_dt.tzinfo:
+                    parsed_dt = parsed_dt.replace(tzinfo=None)
+                if not time_str_lower or time_str_lower in ["16:00", "10:00", "17:00"]:
+                    return parsed_dt.replace(second=0, microsecond=0)
+            except Exception:
+                pass
+
+        # 2. Parse Date
         target_date = now
         weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
         weekdays_short = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -83,14 +96,18 @@ class CalendarService:
             if day_offset_match:
                 target_date = now + timedelta(days=int(day_offset_match.group(1)))
 
-        # Parse Time
+        # 3. Parse Time (inspect both time_str and date_str for explicit time tokens)
+        combined_str = f"{date_str_lower} {time_str_lower}".strip()
         hours = 16
         minutes = 0
 
-        is_evening = any(w in time_str_lower or w in date_str_lower for w in ["evening", "pm", "night", "sanje", "shaam", "afternoon"])
-        is_morning = any(w in time_str_lower or w in date_str_lower for w in ["morning", "am", "belagge", "subah"])
+        is_evening = any(w in combined_str for w in ["evening", "pm", "night", "sanje", "shaam", "afternoon"])
+        is_morning = any(w in combined_str for w in ["morning", "am", "belagge", "subah"])
 
-        twelve_hour_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?', time_str_lower)
+        twelve_hour_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)', combined_str)
+        if not twelve_hour_match and time_str_lower:
+            twelve_hour_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?', time_str_lower)
+
         if twelve_hour_match:
             h = int(twelve_hour_match.group(1))
             m = int(twelve_hour_match.group(2) or 0)
@@ -113,10 +130,50 @@ class CalendarService:
                 minutes = int(parts[1][:2])
             except ValueError:
                 hours, minutes = 16, 0
+        elif ":" in date_str_lower:
+            m_colon = re.search(r'(\d{1,2}):(\d{2})', date_str_lower)
+            if m_colon:
+                hours = int(m_colon.group(1))
+                minutes = int(m_colon.group(2))
+                if is_evening and hours < 12:
+                    hours += 12
 
         hours = max(0, min(hours, 23))
         minutes = max(0, min(minutes, 59))
         return target_date.replace(hour=hours, minute=minutes, second=0, microsecond=0)
+
+    @staticmethod
+    def find_event_by_caller(caller_phone: str = None, caller_name: str = None, business_id: str = None):
+        """Finds the most recent active calendar event associated with a caller or business."""
+        with get_db_connection() as conn:
+            query = "SELECT * FROM calendar_events WHERE status != 'Cancelled'"
+            params = {}
+            if business_id:
+                query += " AND business_id = :bid"
+                params["bid"] = business_id
+
+            if caller_phone and len(caller_phone.strip()) >= 7:
+                clean_phone = re.sub(r'\D', '', caller_phone)[-10:]
+                query += " AND (attendee_phone LIKE :phone OR description LIKE :phone)"
+                params["phone"] = f"%{clean_phone}%"
+            elif caller_name and len(caller_name.strip()) >= 3:
+                query += " AND (attendee_name LIKE :name OR title LIKE :name)"
+                params["name"] = f"%{caller_name.strip()}%"
+
+            query += " ORDER BY created_at DESC LIMIT 1"
+            res = conn.execute(text(query), params).fetchone()
+            if res:
+                return dict(res._mapping)
+
+            # Fallback to latest active event for the business
+            if business_id:
+                fallback = conn.execute(
+                    text("SELECT * FROM calendar_events WHERE business_id = :bid AND status != 'Cancelled' ORDER BY created_at DESC LIMIT 1"),
+                    {"bid": business_id}
+                ).fetchone()
+                if fallback:
+                    return dict(fallback._mapping)
+        return None
 
     @staticmethod
     def check_availability(date_str: str, time_str: str, duration_minutes: int = 30, business_id: str = None):
@@ -311,6 +368,40 @@ class CalendarService:
     @staticmethod
     def cancel_event(event_id: str = "latest", business_id: str = None):
         return CalendarService.update_event(event_id=event_id, status="Cancelled", business_id=business_id)
+
+    @staticmethod
+    def delete_event(event_id: str):
+        with get_db_connection() as conn:
+            existing = conn.execute(text("SELECT * FROM calendar_events WHERE id = :id OR google_event_id = :id"), {"id": event_id}).fetchone()
+            if not existing:
+                return {"success": False, "message": f"Calendar appointment '{event_id}' not found."}
+            evt = dict(existing._mapping)
+            target_id = evt["id"]
+            gcal_id = evt.get("google_event_id")
+
+            # Delete from Google Calendar API if active
+            gcal_service, cal_id = CalendarService.get_gcal_service()
+            if gcal_service and gcal_id:
+                try:
+                    gcal_service.events().delete(calendarId=cal_id, eventId=gcal_id).execute()
+                except Exception as e:
+                    print(f"[CalendarService] Live Google Calendar event delete notice: {e}")
+
+            # Delete from database
+            conn.execute(text("DELETE FROM calendar_events WHERE id = :id"), {"id": target_id})
+            conn.commit()
+
+        return {"success": True, "message": f"Calendar appointment '{evt.get('title', target_id)}' permanently deleted."}
+
+    @staticmethod
+    def delete_all_events(business_id: str = None):
+        with get_db_connection() as conn:
+            if business_id and business_id != "All":
+                conn.execute(text("DELETE FROM calendar_events WHERE business_id = :bid"), {"bid": business_id})
+            else:
+                conn.execute(text("DELETE FROM calendar_events"))
+            conn.commit()
+        return {"success": True, "message": "All calendar appointments deleted successfully."}
 
     @staticmethod
     def list_events(business_id: str = None, status: str = None, search: str = None):

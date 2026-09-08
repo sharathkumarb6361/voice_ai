@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+_invalid_sarvam_keys: set[str] = set()
+
 class PipecatVoicePipeline:
     """
     Pipecat Audio Frame Pipeline Orchestrator.
@@ -18,31 +20,66 @@ class PipecatVoicePipeline:
     No browser speech APIs required.
     """
     @staticmethod
-    def process_stt(audio_bytes: bytes, content_type: str = "audio/wav", language: str = "auto") -> dict:
+    def _audio_filename(content_type: str, filename: str | None = None) -> str:
+        """Preserve the recording container so STT providers decode it correctly."""
+        if filename and "." in filename:
+            return filename
+
+        mime_type = (content_type or "").split(";", 1)[0].strip().lower()
+        extensions = {
+            "audio/webm": "webm",
+            "audio/ogg": "ogg",
+            "audio/wav": "wav",
+            "audio/x-wav": "wav",
+            "audio/mpeg": "mp3",
+            "audio/mp4": "m4a",
+        }
+        return f"recording.{extensions.get(mime_type, 'webm')}"
+
+    @staticmethod
+    def process_stt(
+        audio_bytes: bytes,
+        content_type: str = "audio/wav",
+        language: str = "auto",
+        filename: str | None = None,
+    ) -> dict:
         sarvam_key = os.getenv("SARVAM_API_KEY")
         deepgram_key = os.getenv("DEEPGRAM_API_KEY")
         groq_key = os.getenv("GROQ_API_KEY")
+        audio_filename = PipecatVoicePipeline._audio_filename(content_type, filename)
+        provider_errors = []
 
-        # 1. Try Sarvam AI Saarika STT if SARVAM_API_KEY is available (Primary Indian Voice AI)
-        if sarvam_key:
+        # 1. Primary Indic-language STT. Saaras preserves code-mixed Hindi/Kannada speech.
+        if sarvam_key and sarvam_key not in _invalid_sarvam_keys:
             try:
-                print(f"[Pipecat -> Sarvam AI STT] Decoding Indian language audio frame with saarika:v2.5...")
+                stt_model = os.getenv("SARVAM_STT_MODEL", "saaras:v3")
+                stt_mode = os.getenv("SARVAM_STT_MODE", "codemix")
+                print(f"[Pipecat -> Sarvam AI STT] Decoding Indian language audio frame with {stt_model}...")
                 url = "https://api.sarvam.ai/speech-to-text"
                 headers = {"api-subscription-key": sarvam_key}
-                files = {"file": ("audio.wav", audio_bytes, content_type)}
+                files = {"file": (audio_filename, audio_bytes, content_type)}
                 lang_code = "hi-IN" if language == "hi" else ("kn-IN" if language == "kn" else ("en-IN" if language == "en" else "unknown"))
-                data = {"model": "saarika:v2.5", "language_code": lang_code}
-                with httpx.Client(timeout=10.0) as client:
+                data = {"model": stt_model, "language_code": lang_code, "mode": stt_mode}
+                with httpx.Client(timeout=4.0) as client:
                     resp = client.post(url, headers=headers, files=files, data=data)
                     if resp.status_code == 200:
                         res_json = resp.json()
                         text = res_json.get("transcript", "")
                         if text:
-                            return {"text": text, "provider": "Sarvam AI Saarika v2.5", "confidence": 0.99}
+                            return {
+                                "text": text,
+                                "language": res_json.get("language_code", lang_code),
+                                "provider": f"Sarvam AI {stt_model}",
+                                "confidence": 0.99,
+                            }
                     else:
                         print(f"Sarvam AI STT API error ({resp.status_code}): {resp.text[:150]}")
+                        if resp.status_code in (401, 403):
+                            _invalid_sarvam_keys.add(sarvam_key)
+                        provider_errors.append("Sarvam AI could not transcribe this recording")
             except Exception as e:
                 print(f"Sarvam AI STT notice ({e}), falling back...")
+                provider_errors.append("Sarvam AI transcription request failed")
 
         # 2. Try Groq Whisper STT if GROQ_API_KEY is available
         if groq_key:
@@ -50,8 +87,11 @@ class PipecatVoicePipeline:
                 print(f"[Pipecat -> Groq Whisper STT] Decoding audio frame with whisper-large-v3...")
                 url = "https://api.groq.com/openai/v1/audio/transcriptions"
                 headers = {"Authorization": f"Bearer {groq_key}"}
-                files = {"file": ("recording.wav", audio_bytes, content_type)}
+                clean_mime = (content_type or "audio/webm").split(";")[0].strip()
+                files = {"file": (audio_filename, audio_bytes, clean_mime)}
                 data = {"model": "whisper-large-v3", "response_format": "json"}
+                if language in {"hi", "kn", "en"}:
+                    data["language"] = language
                 with httpx.Client(timeout=10.0) as client:
                     resp = client.post(url, headers=headers, files=files, data=data)
                     if resp.status_code == 200:
@@ -59,8 +99,12 @@ class PipecatVoicePipeline:
                         text = res_json.get("text", "")
                         if text:
                             return {"text": text, "provider": "Groq Whisper-v3", "confidence": 0.99}
+                    else:
+                        print(f"Groq Whisper STT error ({resp.status_code}): {resp.text[:200]}")
+                        provider_errors.append(f"Groq Whisper error ({resp.status_code})")
             except Exception as e:
                 print(f"Groq Whisper STT notice ({e}), falling back...")
+                provider_errors.append("Groq transcription request failed")
 
         # 3. Try Deepgram Nova-2 STT if DEEPGRAM_API_KEY is available
         if deepgram_key:
@@ -78,12 +122,14 @@ class PipecatVoicePipeline:
                             return {"text": transcript, "provider": "Deepgram Nova-2", "confidence": 0.99}
             except Exception as e:
                 print(f"Deepgram STT notice ({e}), falling back...")
+                provider_errors.append("Deepgram transcription request failed")
 
-        # Fallback simulated decoding
+        # Do not invent an English transcript when all providers fail; it corrupts the conversation.
         return {
-            "text": "Hello, I would like to make an enquiry.",
-            "provider": "Pipecat Local Pipeline",
-            "confidence": 0.95
+            "text": "",
+            "provider": "No STT provider available",
+            "confidence": 0.0,
+            "error": "Could not transcribe the recording. Please try again or check the speech service configuration."
         }
 
     @staticmethod
@@ -130,7 +176,7 @@ class PipecatVoicePipeline:
         sarvam_speaker = os.getenv("SARVAM_SPEAKER", "kavya")  # kavya provides warm, natural, human-like voice
 
         # 1. Primary Indian Voice AI: Sarvam AI Bulbul v3 with High-Definition 24kHz audio & natural prosody
-        if sarvam_key:
+        if sarvam_key and sarvam_key not in _invalid_sarvam_keys:
             try:
                 target_code = "hi-IN" if language == "hi" else ("kn-IN" if language == "kn" else "en-IN")
                 print(f"[Pipecat -> Sarvam AI Bulbul v3 TTS] Synthesizing natural human voice ({target_code}, speaker: {sarvam_speaker}, 24kHz)...")
@@ -145,7 +191,7 @@ class PipecatVoicePipeline:
                     "speech_sample_rate": 24000,
                     "enable_preprocessing": True
                 }
-                with httpx.Client(timeout=10.0) as client:
+                with httpx.Client(timeout=4.0) as client:
                     resp = client.post(url, headers=headers, json=payload)
                     if resp.status_code == 200:
                         res_json = resp.json()
@@ -159,6 +205,8 @@ class PipecatVoicePipeline:
                             }
                     else:
                         print(f"Sarvam AI TTS API notice ({resp.status_code}): {resp.text[:150]}")
+                        if resp.status_code in (401, 403):
+                            _invalid_sarvam_keys.add(sarvam_key)
             except Exception as e:
                 print(f"Sarvam AI TTS notice ({e}), falling back...")
 
@@ -222,5 +270,10 @@ class VoiceService:
         return PipecatVoicePipeline.process_tts(text, language)
 
     @staticmethod
-    def speech_to_text(audio_bytes: bytes, content_type: str = "audio/wav", language_hint: str = "auto"):
-        return PipecatVoicePipeline.process_stt(audio_bytes, content_type, language_hint)
+    def speech_to_text(
+        audio_bytes: bytes,
+        content_type: str = "audio/wav",
+        language_hint: str = "auto",
+        filename: str | None = None,
+    ):
+        return PipecatVoicePipeline.process_stt(audio_bytes, content_type, language_hint, filename)

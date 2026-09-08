@@ -98,11 +98,11 @@ export const BusinessProfiles: React.FC<BusinessProfilesProps> = ({ businesses, 
 
       {/* Create Business Profile Modal */}
       {showModal && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="glass-panel w-full max-w-md p-6 space-y-6 border border-indigo-500/30 shadow-2xl relative">
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-3 sm:p-4">
+          <div className="glass-panel w-full max-w-md max-h-[92vh] overflow-y-auto touch-scroll p-4 sm:p-6 space-y-5 border border-indigo-500/30 shadow-2xl relative">
             <button
               onClick={() => setShowModal(false)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-white"
+              className="absolute top-3 right-3 sm:top-4 sm:right-4 w-8 h-8 rounded-full bg-slate-900 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white text-sm font-bold z-10 transition-colors"
             >
               ✕
             </button>

@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS businesses (
     owner_name VARCHAR(255) NOT NULL,
     phone VARCHAR(64) NOT NULL,
     email VARCHAR(255) NOT NULL,
-    address TEXT,
+    address TEXT NOT NULL DEFAULT '',
     created_at VARCHAR(64) NOT NULL
 );
 
@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS workflows (
     actions TEXT NOT NULL, -- JSON string
     closing_message TEXT NOT NULL,
     language VARCHAR(32) NOT NULL DEFAULT 'en-hi',
+    business_hours TEXT NOT NULL DEFAULT '', -- JSON string
     is_active INT NOT NULL DEFAULT 1,
     created_at VARCHAR(64) NOT NULL
 );
@@ -57,9 +58,9 @@ CREATE TABLE IF NOT EXISTS calendar_events (
     end_time VARCHAR(64) NOT NULL,
     attendee_name VARCHAR(255) NOT NULL,
     attendee_phone VARCHAR(64) NOT NULL,
-    description TEXT,
+    description TEXT NOT NULL DEFAULT '',
     status VARCHAR(32) NOT NULL DEFAULT 'Confirmed',
-    google_event_id VARCHAR(128),
+    google_event_id VARCHAR(128) NOT NULL DEFAULT '',
     created_at VARCHAR(64) NOT NULL
 );
 

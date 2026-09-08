@@ -1,10 +1,13 @@
 import React, { useState } from 'react';
 import { MissedCallRecord, Business } from '../types';
+import { regenerateRecordSummary } from '../lib/api';
 
 interface DashboardProps {
   records: MissedCallRecord[];
   businesses?: Business[];
   onStatusChange: (id: string, newStatus: string) => void;
+  onDeleteRecord?: (id: string) => Promise<void>;
+  onDeleteAllRecords?: () => Promise<void>;
   onLaunchSimulator: (businessId: string, workflowId: string) => void;
   onRefresh?: () => void;
 }
@@ -13,6 +16,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   records,
   businesses = [],
   onStatusChange,
+  onDeleteRecord,
+  onDeleteAllRecords,
   onLaunchSimulator,
   onRefresh
 }) => {
@@ -22,12 +27,79 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [statusFilter, setStatusFilter] = useState('All');
   const [urgencyFilter, setUrgencyFilter] = useState('All');
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [isClearing, setIsClearing] = useState(false);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [notificationMsg, setNotificationMsg] = useState<string | null>(null);
 
   const handleRefreshClick = async () => {
     if (!onRefresh) return;
     setIsRefreshing(true);
     await onRefresh();
     setTimeout(() => setIsRefreshing(false), 500);
+  };
+
+  const handleClearAll = async () => {
+    if (records.length === 0) return;
+    if (!window.confirm(`Are you sure you want to permanently delete ALL ${records.length} customer call record(s)? This action cannot be undone.`)) {
+      return;
+    }
+    try {
+      setIsClearing(true);
+      if (onDeleteAllRecords) {
+        await onDeleteAllRecords();
+      }
+      setSelectedRecord(null);
+      setNotificationMsg(`Successfully removed all ${records.length} call records.`);
+      setTimeout(() => setNotificationMsg(null), 3500);
+    } catch (err: any) {
+      console.error('Clear all records error:', err);
+      alert('Failed to clear records. Please try again.');
+    } finally {
+      setIsClearing(false);
+    }
+  };
+
+  const handleDelete = async (id: string, callerName: string) => {
+    if (!window.confirm(`Are you sure you want to permanently delete the call record for "${callerName}"?`)) {
+      return;
+    }
+    try {
+      setDeletingId(id);
+      if (onDeleteRecord) {
+        await onDeleteRecord(id);
+      }
+      if (selectedRecord?.id === id) {
+        setSelectedRecord(null);
+      }
+      setNotificationMsg(`Call record for "${callerName}" was deleted.`);
+      setTimeout(() => setNotificationMsg(null), 3500);
+    } catch (err: any) {
+      console.error('Delete record error:', err);
+      alert('Failed to delete call record. Please try again.');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const handleRegenerateSummary = async (recordId: string) => {
+    try {
+      setIsRegenerating(true);
+      const newSummary = await regenerateRecordSummary(recordId);
+      if (selectedRecord && selectedRecord.id === recordId) {
+        setSelectedRecord({ ...selectedRecord, ai_summary: newSummary });
+      }
+      if (onRefresh) {
+        await onRefresh();
+      }
+      setNotificationMsg('AI summary regenerated successfully with clear highlights.');
+      setTimeout(() => setNotificationMsg(null), 3500);
+    } catch (err: any) {
+      console.error('Failed to regenerate summary:', err);
+      alert('Failed to regenerate summary.');
+    } finally {
+      setIsRegenerating(false);
+    }
   };
 
   // Computed stats
@@ -99,6 +171,22 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </button>
         )}
       </div>
+
+      {/* Action Notification Banner */}
+      {notificationMsg && (
+        <div className="glass-panel p-3.5 bg-emerald-500/15 border border-emerald-500/30 rounded-xl text-xs text-emerald-200 font-semibold flex items-center justify-between shadow-lg">
+          <span className="flex items-center gap-2">
+            <i className="fa-solid fa-circle-check text-emerald-400 text-sm" />
+            {notificationMsg}
+          </span>
+          <button
+            onClick={() => setNotificationMsg(null)}
+            className="text-emerald-400 hover:text-white px-2 py-0.5 rounded-lg text-sm font-bold"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Top Stat Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-5">
@@ -229,6 +317,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </h2>
             <p className="text-xs text-slate-400">Real-time captured details, AI summaries, and tool calling results</p>
           </div>
+          {onDeleteAllRecords && records.length > 0 && (
+            <button
+              onClick={handleClearAll}
+              disabled={isClearing}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-xs font-semibold transition-all disabled:opacity-50"
+              title="Delete all call records"
+            >
+              <i className={`fa-solid ${isClearing ? 'fa-spinner fa-spin' : 'fa-trash-can'}`} />
+              {isClearing ? 'Clearing...' : 'Clear All Records'}
+            </button>
+          )}
         </div>
 
         <div className="overflow-x-auto">
@@ -268,9 +367,18 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     </td>
 
                     {/* Intent & Summary */}
-                    <td className="px-6 py-4 max-w-xs">
-                      <div className="font-semibold text-slate-200 truncate">{record.intent}</div>
-                      <div className="text-slate-400 text-[11px] line-clamp-2 mt-0.5">{record.ai_summary}</div>
+                    <td className="px-6 py-4 max-w-sm">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-semibold text-slate-100 text-xs">{record.intent}</span>
+                        {record.tools_executed?.some(t => t.tool.includes('calendar')) && (
+                          <span className="inline-flex items-center gap-1 text-[10px] text-purple-300 bg-purple-500/20 px-1.5 py-0.5 rounded border border-purple-500/30 font-mono font-medium" title="Event Scheduled on Calendar">
+                            <i className="fa-regular fa-calendar-check text-[10px]" /> Calendar
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-slate-300 text-[11px] line-clamp-2 mt-1 leading-relaxed bg-slate-900/50 p-2 rounded-lg border border-white/5 font-normal">
+                        {record.ai_summary}
+                      </div>
                     </td>
 
                     {/* Urgency */}
@@ -318,12 +426,26 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
                     {/* Actions */}
                     <td className="px-6 py-4 text-right">
-                      <div className="flex items-center justify-end gap-2">
+                      <div className="flex items-center justify-end gap-1.5">
                         <button
                           onClick={() => setSelectedRecord(record)}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/30 font-semibold transition-all"
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/30 text-xs font-semibold transition-all shadow-sm"
+                          title="View detailed transcript, tools, and fields"
                         >
                           Details <i className="fa-solid fa-chevron-right text-[10px]" />
+                        </button>
+
+                        <button
+                          onClick={() => handleDelete(record.id, record.caller_name)}
+                          disabled={deletingId === record.id}
+                          className="flex items-center justify-center p-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/30 text-rose-400 hover:text-rose-200 border border-rose-500/20 hover:border-rose-500/40 text-xs transition-all disabled:opacity-50"
+                          title="Delete call record"
+                        >
+                          {deletingId === record.id ? (
+                            <i className="fa-solid fa-spinner animate-spin text-xs" />
+                          ) : (
+                            <i className="fa-solid fa-trash-can text-xs" />
+                          )}
                         </button>
                       </div>
                     </td>
@@ -337,9 +459,19 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
       {/* Mobile Records Card List View (Visible on mobile < md) */}
       <div className="block md:hidden space-y-3">
-        <h3 className="text-sm font-bold text-white px-1 flex items-center justify-between">
-          <span>Call Records ({filteredRecords.length})</span>
-        </h3>
+        <div className="px-1 flex items-center justify-between">
+          <h3 className="text-sm font-bold text-white">Call Records ({filteredRecords.length})</h3>
+          {onDeleteAllRecords && records.length > 0 && (
+            <button
+              onClick={handleClearAll}
+              disabled={isClearing}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-xs font-semibold"
+            >
+              <i className={`fa-solid ${isClearing ? 'fa-spinner fa-spin' : 'fa-trash-can'}`} />
+              {isClearing ? 'Clearing...' : 'Clear All'}
+            </button>
+          )}
+        </div>
 
         {filteredRecords.length === 0 ? (
           <div className="glass-panel p-6 text-center text-slate-500 text-xs">
@@ -376,12 +508,22 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   <option value="Closed">Closed</option>
                 </select>
 
-                <button
-                  onClick={() => setSelectedRecord(record)}
-                  className="px-3 py-1 rounded-lg bg-indigo-600/30 text-indigo-200 border border-indigo-500/30 font-semibold text-xs"
-                >
-                  View Details ➔
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => setSelectedRecord(record)}
+                    className="px-2.5 py-1 rounded-lg bg-indigo-600/30 text-indigo-200 border border-indigo-500/30 font-semibold text-xs"
+                  >
+                    Details ➔
+                  </button>
+                  <button
+                    onClick={() => handleDelete(record.id, record.caller_name)}
+                    disabled={deletingId === record.id}
+                    className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/30 text-rose-400 border border-rose-500/20 text-xs transition-all disabled:opacity-50"
+                    title="Delete call record"
+                  >
+                    <i className="fa-solid fa-trash-can" />
+                  </button>
+                </div>
               </div>
             </div>
           ))
@@ -390,11 +532,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
       {/* Record Details Modal */}
       {selectedRecord && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4">
-          <div className="glass-panel w-full max-w-3xl max-h-[90vh] overflow-y-auto p-4 sm:p-6 space-y-5 border border-indigo-500/30 shadow-2xl relative">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-2 sm:p-4">
+          <div className="glass-panel w-full max-w-3xl max-h-[92vh] overflow-y-auto p-3.5 sm:p-6 space-y-4 sm:space-y-5 border border-indigo-500/30 shadow-2xl relative touch-scroll">
             <button
               onClick={() => setSelectedRecord(null)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-white text-lg font-bold"
+              className="absolute top-3 right-3 sm:top-4 sm:right-4 w-8 h-8 rounded-full bg-slate-900 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white text-sm font-bold z-10 transition-colors cursor-pointer"
+              title="Close modal"
             >
               ✕
             </button>
@@ -416,12 +559,25 @@ export const Dashboard: React.FC<DashboardProps> = ({
               </div>
             </div>
 
-            {/* AI Summary */}
-            <div className="bg-indigo-950/40 p-3.5 rounded-xl border border-indigo-500/20">
-              <h4 className="text-[11px] font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1.5 mb-1">
-                <i className="fa-solid fa-wand-magic-sparkles text-indigo-400" /> AI Call Summary & Key Findings
-              </h4>
-              <p className="text-xs text-slate-200 leading-relaxed">{selectedRecord.ai_summary}</p>
+            {/* AI Summary Card */}
+            <div className="bg-gradient-to-br from-indigo-950/60 to-purple-950/40 p-4 rounded-xl border border-indigo-500/30 shadow-lg space-y-2.5">
+              <div className="flex items-center justify-between">
+                <h4 className="text-[11px] font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <i className="fa-solid fa-wand-magic-sparkles text-indigo-400" /> Executive AI Call Summary
+                </h4>
+                <button
+                  onClick={() => handleRegenerateSummary(selectedRecord.id)}
+                  disabled={isRegenerating}
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/30 text-[11px] font-semibold transition-all disabled:opacity-50"
+                  title="Regenerate clear AI summary from captured call details"
+                >
+                  <i className={`fa-solid fa-arrows-rotate text-[10px] ${isRegenerating ? 'animate-spin' : ''}`} />
+                  {isRegenerating ? 'Generating...' : 'Regenerate Summary'}
+                </button>
+              </div>
+              <p className="text-xs text-slate-100 leading-relaxed font-normal bg-slate-900/70 p-3.5 rounded-xl border border-white/5 shadow-inner">
+                {selectedRecord.ai_summary}
+              </p>
             </div>
 
             {/* Structured Captured Data Fields */}
@@ -489,10 +645,23 @@ export const Dashboard: React.FC<DashboardProps> = ({
               </div>
             </div>
 
-            <div className="flex justify-end pt-2">
+            <div className="flex items-center justify-between pt-3 border-t border-white/10">
+              <button
+                onClick={() => handleDelete(selectedRecord.id, selectedRecord.caller_name)}
+                disabled={deletingId === selectedRecord.id}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 hover:text-white border border-rose-500/30 text-xs font-bold transition-all disabled:opacity-50"
+              >
+                {deletingId === selectedRecord.id ? (
+                  <i className="fa-solid fa-spinner animate-spin" />
+                ) : (
+                  <i className="fa-solid fa-trash-can" />
+                )}
+                Delete Call Record
+              </button>
+
               <button
                 onClick={() => setSelectedRecord(null)}
-                className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs"
+                className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs transition-all shadow-md"
               >
                 Close Details
               </button>

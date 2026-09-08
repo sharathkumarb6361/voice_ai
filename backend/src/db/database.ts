@@ -23,7 +23,7 @@ export function initDatabase() {
       owner_name TEXT NOT NULL,
       phone TEXT NOT NULL,
       email TEXT NOT NULL,
-      address TEXT,
+      address TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL
     );
 
@@ -39,6 +39,7 @@ export function initDatabase() {
       actions TEXT NOT NULL, -- JSON string
       closing_message TEXT NOT NULL,
       language TEXT NOT NULL DEFAULT 'en',
+      business_hours TEXT NOT NULL DEFAULT '',
       is_active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       FOREIGN KEY (business_id) REFERENCES businesses(id)
@@ -70,9 +71,9 @@ export function initDatabase() {
       end_time TEXT NOT NULL,
       attendee_name TEXT NOT NULL,
       attendee_phone TEXT NOT NULL,
-      description TEXT,
+      description TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'Confirmed',
-      google_event_id TEXT,
+      google_event_id TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL
     );
   `);
@@ -107,9 +108,9 @@ function seedDefaultData() {
       { key: 'cake_flavor', label: 'Cake Flavor', type: 'text', required: true, description: 'e.g. Belgian Chocolate, Red Velvet, Vanilla Mango' },
       { key: 'weight_kg', label: 'Weight (in kg)', type: 'number', required: true, description: 'e.g. 1, 2, 5' },
       { key: 'required_date', label: 'Required Date & Time', type: 'datetime', required: true },
-      { key: 'custom_message', label: 'Message on Cake', type: 'text', required: false },
+      { key: 'custom_message', label: 'Message on Cake', type: 'text', required: true },
       { key: 'delivery_preference', label: 'Delivery or Pickup', type: 'select', options: ['Home Delivery', 'Store Pickup'], required: true },
-      { key: 'budget_inr', label: 'Budget (INR)', type: 'number', required: false }
+      { key: 'budget_inr', label: 'Budget (INR)', type: 'number', required: true }
     ]),
     conditions: JSON.stringify([
       { field: 'required_date', operator: 'within_hours', value: 24, action_override: 'mark_urgent', note: 'Mark urgent if required within 24 hours' }
@@ -150,7 +151,7 @@ function seedDefaultData() {
       { key: 'patient_name', label: 'Patient Name', type: 'text', required: true },
       { key: 'specialty_or_doctor', label: 'Specialty / Doctor', type: 'select', options: ['General Physician', 'Dermatologist', 'Cardiologist', 'Pediatrician', 'Dentist'], required: true },
       { key: 'preferred_date_time', label: 'Preferred Date & Time', type: 'datetime', required: true },
-      { key: 'symptoms_or_notes', label: 'Symptoms / Brief Note', type: 'text', required: false }
+      { key: 'symptoms_or_notes', label: 'Symptoms / Brief Note', type: 'text', required: true }
     ]),
     conditions: JSON.stringify([
       { field: 'request_type', operator: 'equals', value: 'Book Appointment', tool_action: 'check_and_create_google_calendar', note: 'Checks calendar availability and creates Google Calendar event' }
@@ -188,10 +189,10 @@ function seedDefaultData() {
     greeting: 'Welcome to SwiftMove Express! Sorry we missed your call. Would you like to schedule a new package delivery or track an existing parcel?',
     fields: JSON.stringify([
       { key: 'service_type', label: 'Service Type', type: 'select', options: ['New Pickup & Delivery', 'Track Package Status', 'Support / Issue'], required: true },
-      { key: 'tracking_number', label: 'Tracking Number (if existing)', type: 'text', required: false },
-      { key: 'pickup_address', label: 'Pickup Location', type: 'text', required: false },
-      { key: 'delivery_address', label: 'Delivery Location', type: 'text', required: false },
-      { key: 'package_type', label: 'Package Type', type: 'select', options: ['Standard Documents', 'Electronics', 'Heavy Parcel', 'Perishable'], required: false }
+      { key: 'tracking_number', label: 'Tracking Number (if existing)', type: 'text', required: true },
+      { key: 'pickup_address', label: 'Pickup Location', type: 'text', required: true },
+      { key: 'delivery_address', label: 'Delivery Location', type: 'text', required: true },
+      { key: 'package_type', label: 'Package Type', type: 'select', options: ['Standard Documents', 'Electronics', 'Heavy Parcel', 'Perishable'], required: true }
     ]),
     conditions: JSON.stringify([
       { field: 'tracking_number', operator: 'exists', tool_action: 'call_external_delivery_api', note: 'Calls external Logistics API tool to fetch real-time package status' }
@@ -232,7 +233,7 @@ function seedDefaultData() {
       { key: 'property_type', label: 'Property Type', type: 'select', options: ['2BHK Apartment', '3BHK Apartment', 'Independent Villa', 'Commercial Plot'], required: true },
       { key: 'preferred_location', label: 'Preferred Location', type: 'text', required: true },
       { key: 'budget_range', label: 'Budget Range (Lakhs / Crores)', type: 'text', required: true },
-      { key: 'site_visit_date', label: 'Preferred Visit Date', type: 'datetime', required: false }
+      { key: 'site_visit_date', label: 'Preferred Visit Date', type: 'datetime', required: true }
     ]),
     conditions: JSON.stringify([
       { field: 'intent', operator: 'equals', value: 'Schedule Site Visit', tool_action: 'check_and_create_google_calendar', note: 'Schedule site visit appointment on agent Google Calendar' }

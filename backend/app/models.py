@@ -7,7 +7,7 @@ class BusinessBase(BaseModel):
     owner_name: str
     phone: str
     email: str
-    address: Optional[str] = ""
+    address: str = ""
 
 class BusinessCreate(BusinessBase):
     pass
@@ -21,7 +21,7 @@ class WorkflowField(BaseModel):
     label: str
     type: str  # 'text', 'select', 'number', 'datetime'
     options: Optional[List[str]] = []
-    required: bool = False
+    required: bool = True
     description: Optional[str] = ""
 
 class WorkflowCondition(BaseModel):
@@ -87,6 +87,11 @@ class ChatRequest(BaseModel):
     messages: List[ChatMessage]
     record_id: Optional[str] = None
 
+class DeliveryMissedCallRequest(BaseModel):
+    caller_name: Optional[str] = "Mobile Caller"
+    caller_phone: str
+    language: Optional[str] = "auto"
+
 class RecordStatusUpdate(BaseModel):
     status: str
 
@@ -97,7 +102,7 @@ class CalendarEventRequest(BaseModel):
     end_time: str
     attendee_name: str
     attendee_phone: str
-    description: Optional[str] = ""
+    description: str = ""
 
 class CalendarEventUpdate(BaseModel):
     title: Optional[str] = None

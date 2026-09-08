@@ -15,10 +15,14 @@ import {
   updateWorkflow,
   fetchRecords,
   updateRecordStatus,
+  deleteRecord,
+  deleteAllRecords,
   fetchCalendarEvents,
   createCalendarEvent,
   updateCalendarEvent,
   cancelCalendarEvent,
+  deleteCalendarEvent,
+  deleteAllCalendarEvents,
   syncGoogleCalendar
 } from './lib/api';
 
@@ -40,12 +44,13 @@ export default function App() {
   const [records, setRecords] = useState<MissedCallRecord[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [simulatorWorkflowId, setSimulatorWorkflowId] = useState<string | undefined>(undefined);
+  const [calendarTargetDate, setCalendarTargetDate] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Load initial data from Python FastAPI backend
-  const loadData = async () => {
+  const loadData = async (silent: boolean = false) => {
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       const [bizData, wfData, recData, calData] = await Promise.all([
         fetchBusinesses(),
         fetchWorkflows(),
@@ -60,13 +65,13 @@ export default function App() {
     } catch (err: any) {
       console.error('FastAPI data loading error:', err);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadData();
-  }, []);
+    loadData(activeTab !== 'dashboard');
+  }, [activeTab]);
 
   // Filtered state per authenticated business owner profile
   const displayedRecords = authenticatedBusinessId
@@ -124,24 +129,44 @@ export default function App() {
     await loadData();
   };
 
+  const handleDeleteRecord = async (id: string) => {
+    await deleteRecord(id);
+    await loadData();
+  };
+
+  const handleDeleteAllRecords = async () => {
+    await deleteAllRecords(authenticatedBusinessId || undefined);
+    await loadData();
+  };
+
   const handleCreateCalendarEvent = async (data: Partial<CalendarEvent>) => {
     await createCalendarEvent(data);
-    await loadData();
+    await loadData(true);
   };
 
   const handleUpdateCalendarEvent = async (eventId: string, data: Partial<CalendarEvent>) => {
     await updateCalendarEvent(eventId, data);
-    await loadData();
+    await loadData(true);
   };
 
   const handleCancelCalendarEvent = async (eventId: string) => {
     await cancelCalendarEvent(eventId);
-    await loadData();
+    await loadData(true);
+  };
+
+  const handleDeleteCalendarEvent = async (eventId: string) => {
+    await deleteCalendarEvent(eventId);
+    await loadData(true);
+  };
+
+  const handleDeleteAllCalendarEvents = async () => {
+    await deleteAllCalendarEvents(authenticatedBusinessId || undefined);
+    await loadData(true);
   };
 
   const handleSyncCalendar = async () => {
     const res = await syncGoogleCalendar();
-    await loadData();
+    await loadData(true);
     return res;
   };
 
@@ -164,7 +189,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen pb-16 text-slate-100 relative z-10">
+    <div className="min-h-screen pb-24 lg:pb-16 text-slate-100 relative z-10">
       {/* Top Glass Navigation Bar */}
       <Navbar
         activeTab={activeTab}
@@ -178,7 +203,7 @@ export default function App() {
       />
 
       {/* Main Container */}
-      <main className="max-w-7xl mx-auto px-4 lg:px-8">
+      <main className="max-w-7xl mx-auto px-2.5 sm:px-6 lg:px-8">
         {loading ? (
           <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-4">
             <div className="w-12 h-12 rounded-full border-4 border-indigo-500 border-t-transparent animate-spin" />
@@ -193,6 +218,8 @@ export default function App() {
                 records={displayedRecords}
                 businesses={businesses}
                 onStatusChange={handleStatusChange}
+                onDeleteRecord={handleDeleteRecord}
+                onDeleteAllRecords={handleDeleteAllRecords}
                 onLaunchSimulator={handleLaunchSimulator}
                 onRefresh={loadData}
               />
@@ -216,6 +243,11 @@ export default function App() {
                 workflows={workflows}
                 selectedLanguage={selectedLanguage}
                 initialWorkflowId={simulatorWorkflowId}
+                onDataChanged={() => loadData(true)}
+                onNavigateToCalendar={(targetDate?: string) => {
+                  if (targetDate) setCalendarTargetDate(targetDate);
+                  setActiveTab('calendar');
+                }}
               />
             )}
 
@@ -228,13 +260,18 @@ export default function App() {
 
             {activeTab === 'calendar' && (
               <CalendarMonitor
-                events={displayedCalendarEvents}
+                events={calendarEvents}
                 businesses={businesses}
+                defaultBusinessFilter={authenticatedBusinessId || 'All'}
+                initialTargetDate={calendarTargetDate}
+                onTargetDateConsumed={() => setCalendarTargetDate(null)}
                 onCreateEvent={handleCreateCalendarEvent}
                 onUpdateEvent={handleUpdateCalendarEvent}
                 onCancelEvent={handleCancelCalendarEvent}
+                onDeleteEvent={handleDeleteCalendarEvent}
+                onDeleteAllEvents={handleDeleteAllCalendarEvents}
                 onSyncCalendar={handleSyncCalendar}
-                onRefresh={loadData}
+                onRefresh={() => loadData(true)}
               />
             )}
           </>
