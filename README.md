@@ -182,7 +182,7 @@ Run the backend and frontend in separate terminals with hot-reloading enabled.
 
 #### Step 1: Clone the Repository
 ```bash
-git clone https://github.com/your-username/voice_ai.git
+git clone https://github.com/sharathkumarb6361/voice_ai.git
 cd voice_ai
 ```
 
